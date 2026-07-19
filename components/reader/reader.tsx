@@ -12,7 +12,6 @@ import {
   X,
   ArrowUpRight,
   Loader2,
-  RotateCw,
 } from "lucide-react";
 import type { Note, NoteSection, Profile, ReaderTheme, ReaderFont } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -48,17 +47,6 @@ export function Reader({
   const router = useRouter();
   const total = sections.length;
   const [index, setIndex] = useState(Math.min(initialIndex, Math.max(total - 1, 0)));
-  const [retrying, setRetrying] = useState(false);
-
-  async function resume() {
-    setRetrying(true);
-    try {
-      await fetch(`/api/notes/${note.id}/retry`, { method: "POST" });
-      router.refresh();
-    } finally {
-      setRetrying(false);
-    }
-  }
   const [theme, setTheme] = useState<ReaderTheme>(profile.default_theme);
   const [font, setFont] = useState<ReaderFont>(profile.font_family);
   const [size, setSize] = useState<number>(profile.font_size);
@@ -231,36 +219,10 @@ export function Reader({
           </header>
 
           {processing && (
-            <div className="mb-8 flex items-center justify-between gap-3 rounded-xl border border-oxblood/20 bg-oxblood/5 px-4 py-3 text-sm">
-              <span className="flex items-center gap-2 text-ink">
-                <Loader2 className="h-4 w-4 animate-spin text-oxblood" />
-                Writing this note — new sections appear as they&rsquo;re ready. You can leave; it
-                keeps going.
-              </span>
-              <button
-                onClick={resume}
-                disabled={retrying}
-                className="inline-flex flex-none items-center gap-1 rounded-lg px-2 py-1 text-oxblood hover:bg-oxblood/10 disabled:opacity-50"
-              >
-                <RotateCw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} /> Resume
-              </button>
-            </div>
-          )}
-
-          {note.status === "error" && (
-            <div className="mb-8 flex flex-col gap-3 rounded-xl border border-oxblood/30 bg-oxblood/5 px-4 py-3.5 text-sm sm:flex-row sm:items-center sm:justify-between">
-              <span className="text-ink">
-                This note didn&rsquo;t finish writing.{" "}
-                {total > 0 ? "What you see below is complete; " : ""}pick up where it left off.
-              </span>
-              <button
-                onClick={resume}
-                disabled={retrying}
-                className="inline-flex flex-none items-center justify-center gap-1.5 rounded-lg bg-oxblood px-3.5 py-2 font-semibold text-paper transition-transform hover:-translate-y-px disabled:opacity-60"
-              >
-                <RotateCw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} />
-                {retrying ? "Resuming…" : "Try again"}
-              </button>
+            <div className="mb-8 flex items-center gap-2 rounded-xl border border-oxblood/20 bg-oxblood/5 px-4 py-3 text-sm text-ink">
+              <Loader2 className="h-4 w-4 flex-none animate-spin text-oxblood" />
+              Writing this note — new sections appear as they&rsquo;re ready. You can leave; it keeps
+              going and picks up where it left off.
             </div>
           )}
 

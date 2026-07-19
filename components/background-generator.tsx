@@ -32,11 +32,13 @@ export function BackgroundGenerator() {
     // a fresh drive, so it auto-resumes once the quota frees or the network is back.
     const MAX_CONSEC_429 = 6; // ~ persistent quota exhaustion for this window
     const MAX_CONSEC_NET = 4; // ~ persistent network failure
+    const MAX_CONSEC_ERR = 5; // ~ persistent transient server error
 
     async function drive(noteId: string) {
       let lastStart = 0;
       let consec429 = 0;
       let consecNet = 0;
+      let consecErr = 0;
       while (!stopped) {
         const since = Date.now() - lastStart;
         if (lastStart && since < MIN_INTERVAL_MS) {
@@ -46,7 +48,7 @@ export function BackgroundGenerator() {
         lastStart = Date.now();
 
         let res: Response;
-        let data: { done?: boolean; retryAfter?: number; error?: string } = {};
+        let data: { done?: boolean; retryAfter?: number } = {};
         try {
           res = await fetch(`/api/notes/${noteId}/generate-next`, { method: "POST" });
           data = await res.json().catch(() => ({}));
@@ -59,14 +61,22 @@ export function BackgroundGenerator() {
         consecNet = 0;
 
         if (res.status === 429) {
-          if (++consec429 > MAX_CONSEC_429) return; // quota persistently blocked; back off to next tick
+          if (++consec429 > MAX_CONSEC_429) return; // quota blocked; back off to next tick
           await sleep(Math.max(5, data.retryAfter ?? 15) * 1000);
           lastStart = 0;
           continue; // retry same chunk
         }
         consec429 = 0;
 
-        if (!res.ok) return; // note marked errored server-side; stop this one
+        if (!res.ok) {
+          // Transient server error (503) — never terminal. Retry the same chunk,
+          // bounded, then hand back to the next poll tick.
+          if (++consecErr > MAX_CONSEC_ERR) return;
+          await sleep(4000);
+          lastStart = 0;
+          continue;
+        }
+        consecErr = 0;
 
         router.refresh(); // surface new sections / progress on whatever page is open
         if (data.done) return;

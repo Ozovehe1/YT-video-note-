@@ -82,9 +82,11 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     }
   }
   if (!generated) {
-    const message = lastErr instanceof Error ? lastErr.message : "Generation failed.";
-    await supabase.from("notes").update({ status: "error", error_message: message }).eq("id", id);
-    return NextResponse.json({ error: message }, { status: 502 });
+    // Transient failure. Do NOT fail the note or bother the user — leave the
+    // cursor where it is and signal "retry"; the background driver picks the
+    // same chunk up again and it recovers on its own.
+    void lastErr;
+    return NextResponse.json({ retry: true }, { status: 503 });
   }
 
   // Insert the new sections.
@@ -98,7 +100,8 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   if (rows.length) {
     const { error: insErr } = await supabase.from("note_sections").insert(rows);
     if (insErr) {
-      return NextResponse.json({ error: "Could not save sections." }, { status: 500 });
+      // Don't advance the cursor; signal retry so the same chunk is re-attempted.
+      return NextResponse.json({ retry: true }, { status: 503 });
     }
   }
 
