@@ -27,8 +27,16 @@ export function BackgroundGenerator() {
   useEffect(() => {
     let stopped = false;
 
+    // Bounds so a single note can never loop forever. When a cap is hit we stop
+    // driving this note for now (it stays `processing`); the next poll tick starts
+    // a fresh drive, so it auto-resumes once the quota frees or the network is back.
+    const MAX_CONSEC_429 = 6; // ~ persistent quota exhaustion for this window
+    const MAX_CONSEC_NET = 4; // ~ persistent network failure
+
     async function drive(noteId: string) {
       let lastStart = 0;
+      let consec429 = 0;
+      let consecNet = 0;
       while (!stopped) {
         const since = Date.now() - lastStart;
         if (lastStart && since < MIN_INTERVAL_MS) {
@@ -43,16 +51,21 @@ export function BackgroundGenerator() {
           res = await fetch(`/api/notes/${noteId}/generate-next`, { method: "POST" });
           data = await res.json().catch(() => ({}));
         } catch {
+          if (++consecNet > MAX_CONSEC_NET) return; // give up for now; resume next tick
           await sleep(5000);
-          continue; // transient network error — retry
+          continue;
         }
         if (stopped) return;
+        consecNet = 0;
 
         if (res.status === 429) {
+          if (++consec429 > MAX_CONSEC_429) return; // quota persistently blocked; back off to next tick
           await sleep(Math.max(5, data.retryAfter ?? 15) * 1000);
           lastStart = 0;
           continue; // retry same chunk
         }
+        consec429 = 0;
+
         if (!res.ok) return; // note marked errored server-side; stop this one
 
         router.refresh(); // surface new sections / progress on whatever page is open

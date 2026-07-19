@@ -50,28 +50,39 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
 
   const nextOrderBase = lastSection ? lastSection.order_index + 1 : 0;
 
-  let generated;
-  try {
-    generated = await generateChunk({
-      chunkIndex: cursor,
-      chunkTotal: chunks.length,
-      videoTitle: note.title,
-      channel: note.channel,
-      videoType: (note.video_type as VideoType | null) ?? null,
-      speakers: note.speakers ?? [],
-      previousHeading: lastSection?.heading ?? null,
-      chunkText: chunks[cursor],
-    });
-  } catch (err) {
-    // Rate limit: don't fail the note — tell the client to wait and retry this
-    // same chunk (cursor isn't advanced, so a retry re-attempts it).
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { rateLimited: true, retryAfter: err.retryAfterSec },
-        { status: 429 },
-      );
+  // Try the chunk, retrying transient failures (bad JSON, empty output, a Gemini
+  // 5xx) once before giving up — so a single flaky response doesn't kill the note.
+  // Rate limits are NOT retried here; they're returned to the client to pace.
+  let generated: Awaited<ReturnType<typeof generateChunk>> | undefined;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      generated = await generateChunk({
+        chunkIndex: cursor,
+        chunkTotal: chunks.length,
+        videoTitle: note.title,
+        channel: note.channel,
+        videoType: (note.video_type as VideoType | null) ?? null,
+        speakers: note.speakers ?? [],
+        previousHeading: lastSection?.heading ?? null,
+        chunkText: chunks[cursor],
+      });
+      break;
+    } catch (err) {
+      // Rate limit: don't fail — tell the client to wait and retry this same chunk
+      // (cursor isn't advanced, so a retry re-attempts it).
+      if (err instanceof RateLimitError) {
+        return NextResponse.json(
+          { rateLimited: true, retryAfter: err.retryAfterSec },
+          { status: 429 },
+        );
+      }
+      lastErr = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
     }
-    const message = err instanceof Error ? err.message : "Generation failed.";
+  }
+  if (!generated) {
+    const message = lastErr instanceof Error ? lastErr.message : "Generation failed.";
     await supabase.from("notes").update({ status: "error", error_message: message }).eq("id", id);
     return NextResponse.json({ error: message }, { status: 502 });
   }

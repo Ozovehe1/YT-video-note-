@@ -62,7 +62,7 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
 
         <div className="mt-auto pt-3">
           {errored ? (
-            <p className="text-xs text-oxblood">Failed — {note.error_message ?? "try again"}</p>
+            <p className="text-xs text-oxblood">Didn&rsquo;t finish — open to resume</p>
           ) : started ? (
             <div className="flex items-center gap-2">
               <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-panel">
