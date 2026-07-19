@@ -3,7 +3,7 @@ import { CHUNK_SCHEMA, SYSTEM_PROMPT, chunkUserPrompt } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
 export const MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-pro";
+  process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 let client: GoogleGenAI | null = null;
 
