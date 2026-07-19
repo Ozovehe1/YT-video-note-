@@ -63,28 +63,44 @@ alter table public.notes enable row level security;
 alter table public.note_sections enable row level security;
 alter table public.reading_progress enable row level security;
 
+-- Policies are dropped-then-created so this whole script is safe to re-run
+-- (Postgres has no "create policy if not exists").
+
 -- profiles: owner-only
+drop policy if exists "profiles_select_own" on public.profiles;
 create policy "profiles_select_own" on public.profiles for select using (auth.uid() = id);
+drop policy if exists "profiles_upsert_own" on public.profiles;
 create policy "profiles_upsert_own" on public.profiles for insert with check (auth.uid() = id);
+drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own" on public.profiles for update using (auth.uid() = id);
 
 -- notes: owner-only
+drop policy if exists "notes_select_own" on public.notes;
 create policy "notes_select_own" on public.notes for select using (auth.uid() = user_id);
+drop policy if exists "notes_insert_own" on public.notes;
 create policy "notes_insert_own" on public.notes for insert with check (auth.uid() = user_id);
+drop policy if exists "notes_update_own" on public.notes;
 create policy "notes_update_own" on public.notes for update using (auth.uid() = user_id);
+drop policy if exists "notes_delete_own" on public.notes;
 create policy "notes_delete_own" on public.notes for delete using (auth.uid() = user_id);
 
 -- note_sections: access gated through the parent note's ownership
+drop policy if exists "sections_select_own" on public.note_sections;
 create policy "sections_select_own" on public.note_sections for select
   using (exists (select 1 from public.notes n where n.id = note_id and n.user_id = auth.uid()));
+drop policy if exists "sections_insert_own" on public.note_sections;
 create policy "sections_insert_own" on public.note_sections for insert
   with check (exists (select 1 from public.notes n where n.id = note_id and n.user_id = auth.uid()));
+drop policy if exists "sections_delete_own" on public.note_sections;
 create policy "sections_delete_own" on public.note_sections for delete
   using (exists (select 1 from public.notes n where n.id = note_id and n.user_id = auth.uid()));
 
 -- reading_progress: owner-only
+drop policy if exists "progress_select_own" on public.reading_progress;
 create policy "progress_select_own" on public.reading_progress for select using (auth.uid() = user_id);
+drop policy if exists "progress_upsert_own" on public.reading_progress;
 create policy "progress_upsert_own" on public.reading_progress for insert with check (auth.uid() = user_id);
+drop policy if exists "progress_update_own" on public.reading_progress;
 create policy "progress_update_own" on public.reading_progress for update using (auth.uid() = user_id);
 
 -- ---------- auto-create a profile row on signup ----------
