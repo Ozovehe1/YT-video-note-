@@ -2,7 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { CHUNK_SCHEMA, SYSTEM_PROMPT, chunkUserPrompt } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
-export const MODEL = "claude-opus-4-8";
+// Sonnet 5: near-Opus quality on this task at a much lower price. Supports adaptive
+// thinking (on by default) and output_config/structured outputs, which is all we use.
+export const MODEL = "claude-sonnet-5";
 
 let client: Anthropic | null = null;
 function anthropic(): Anthropic {

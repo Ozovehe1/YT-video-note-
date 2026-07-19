@@ -8,7 +8,7 @@ timestamped transcript, detects whether it's a **monologue** or a **dialogue**, 
 complete note that mirrors the video's own structure — in order, nothing summarized away. Longer
 video → longer read.
 
-Built with **Next.js** (App Router) + **Claude** (`claude-opus-4-8`) + **Supabase**, deployable free
+Built with **Next.js** (App Router) + **Claude** (`claude-sonnet-5`) + **Supabase**, deployable free
 on **Vercel**.
 
 ---
