@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { generateChunk } from "@/lib/anthropic";
+import { generateChunk } from "@/lib/gemini";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;

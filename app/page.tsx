@@ -76,7 +76,7 @@ export default function Home() {
           <Step
             n="03"
             icon={<BookOpen className="h-5 w-5" />}
-            title="Claude writes"
+            title="We write it out"
             body="Monologue or dialogue is detected, speakers attributed, and a faithful note is written in order."
           />
           <Step
@@ -126,7 +126,7 @@ export default function Home() {
       <footer className="border-t border-hairline py-10 text-sm text-muted">
         <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <span>Verbatim — read any video.</span>
-          <span className="font-mono text-xs">Built with Claude</span>
+          <span className="font-mono text-xs">Not a summary — the whole video, faithfully.</span>
         </div>
       </footer>
     </main>

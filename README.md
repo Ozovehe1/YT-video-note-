@@ -8,8 +8,7 @@ timestamped transcript, detects whether it's a **monologue** or a **dialogue**, 
 complete note that mirrors the video's own structure — in order, nothing summarized away. Longer
 video → longer read.
 
-Built with **Next.js** (App Router) + **Claude** (`claude-sonnet-5`) + **Supabase**, deployable free
-on **Vercel**.
+Built with **Next.js** (App Router) + **Google Gemini** + **Supabase**, deployable free on **Vercel**.
 
 ---
 
@@ -32,7 +31,7 @@ on **Vercel**.
 Next.js on Vercel
   ├─ YouTube Data API   → search by title + video metadata      (lib/youtube.ts)
   ├─ Supadata           → timestamped transcript (works on Vercel IPs)  (lib/supadata.ts)
-  ├─ Claude (Anthropic) → chunked note generation → structured blocks   (lib/anthropic.ts)
+  ├─ Google Gemini      → chunked note generation → structured blocks   (lib/gemini.ts)
   └─ Supabase           → Postgres (notes, sections, progress) + Auth, all RLS-protected
 ```
 
@@ -50,7 +49,7 @@ progress.
 
 | Service | Used for | Get a key |
 |---|---|---|
-| **Anthropic** | Writing the notes | <https://platform.claude.com/> |
+| **Google Gemini** | Writing the notes | <https://aistudio.google.com/> |
 | **Supabase** | Accounts + data | <https://supabase.com/> (create a project) |
 | **Supadata** | Transcripts | <https://supadata.ai/> |
 | **YouTube Data API v3** | Title search | Google Cloud Console → enable *YouTube Data API v3* → API key |
@@ -67,11 +66,12 @@ this app. RLS does the access control.
 ### 3. Configure environment
 
 ```bash
-cp .env.example .env.local   # then fill in the four keys
+cp .env.example .env.local   # then fill in your keys
 ```
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=AQ...
+GEMINI_MODEL=gemini-2.5-pro
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...
 SUPADATA_API_KEY=sd_...
@@ -90,7 +90,7 @@ Open <http://localhost:3000>, sign up, and make your first note.
 ## Deploy to Vercel
 
 1. Push this repo to GitHub and import it in Vercel.
-2. Add the five environment variables above in **Project → Settings → Environment Variables**.
+2. Add the environment variables above in **Project → Settings → Environment Variables**.
 3. In Supabase → **Authentication → URL Configuration**, add your Vercel URL to the redirect allow-list
    (for email confirmation). Set the Site URL to your deployed domain.
 4. Deploy. Transcripts and search work from Vercel's IPs because they go through Supadata / the
@@ -112,7 +112,7 @@ app/
     notes/[id]/generate-next/  generate one chunk → sections
     notes/[id]/export/         PDF | DOCX | EPUB | Markdown, on demand
 lib/
-  youtube, supadata, chunk, prompts, anthropic
+  youtube, supadata, chunk, prompts, gemini
   supabase/{client,server,middleware}
   export/{markdown,docx,epub,pdf}
 components/                     nav, hero search, reader, note cards, settings…
