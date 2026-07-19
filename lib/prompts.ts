@@ -46,6 +46,10 @@ ${sample}
 </transcript_sample>`;
 }
 
+// NOTE: these schemas target Gemini's `responseSchema`, which is a *subset* of
+// JSON Schema. It does NOT support `additionalProperties`, and a nullable field
+// must use `nullable: true` with a single `type` — never a `["string","null"]`
+// union. Using either makes Gemini reject the request on every call.
 export const CLASSIFY_SCHEMA = {
   type: "object",
   properties: {
@@ -57,7 +61,6 @@ export const CLASSIFY_SCHEMA = {
     },
   },
   required: ["video_type", "speakers"],
-  additionalProperties: false,
 } as const;
 
 export const SYSTEM_PROMPT = `\
@@ -169,7 +172,7 @@ export const CHUNK_SCHEMA = {
         type: "object",
         properties: {
           heading: { type: "string" },
-          timestamp_label: { type: ["string", "null"] },
+          timestamp_label: { type: "string", nullable: true },
           content: {
             type: "array",
             items: {
@@ -177,19 +180,16 @@ export const CHUNK_SCHEMA = {
               properties: {
                 type: { type: "string", enum: ["paragraph", "bullet", "quote"] },
                 text: { type: "string" },
-                speaker: { type: ["string", "null"] },
-                timestamp: { type: ["string", "null"] },
+                speaker: { type: "string", nullable: true },
+                timestamp: { type: "string", nullable: true },
               },
               required: ["type", "text"],
-              additionalProperties: false,
             },
           },
         },
-        required: ["heading", "timestamp_label", "content"],
-        additionalProperties: false,
+        required: ["heading", "content"],
       },
     },
   },
   required: ["video_type", "speakers", "sections"],
-  additionalProperties: false,
 } as const;

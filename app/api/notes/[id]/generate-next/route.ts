@@ -84,8 +84,12 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   if (!generated) {
     // Transient failure. Do NOT fail the note or bother the user — leave the
     // cursor where it is and signal "retry"; the background driver picks the
-    // same chunk up again and it recovers on its own.
-    void lastErr;
+    // same chunk up again and it recovers on its own. Log it so a *persistent*
+    // failure (which would otherwise look like an endless spinner) is visible.
+    console.error(
+      `[generate-next] chunk ${cursor} failed for note ${id} after retries:`,
+      lastErr,
+    );
     return NextResponse.json({ retry: true }, { status: 503 });
   }
 

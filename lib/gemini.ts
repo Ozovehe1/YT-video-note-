@@ -89,6 +89,7 @@ export async function classifyVideo(opts: {
     });
   } catch (err) {
     if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    console.error("[classifyVideo] Gemini call failed:", err);
     throw err;
   }
 
@@ -133,6 +134,10 @@ export async function generateChunk(
     });
   } catch (err) {
     if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    console.error(
+      `[generateChunk] Gemini call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
+      err,
+    );
     throw err;
   }
 
