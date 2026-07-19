@@ -27,7 +27,11 @@ Also identify the speakers: use real names if the transcript states them (hosts 
 guest's name in the intro); otherwise use roles like "Host" and "Guest", or "Speaker 1" /
 "Speaker 2". For a monologue, return a single speaker (the narrator/presenter or their name).
 
-Return ONLY the structured object requested.`;
+Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
+{
+  "video_type": "monologue" | "dialogue",
+  "speakers": ["<label>", ...]
+}`;
 
 export function classifyUserPrompt(opts: {
   videoTitle: string;
@@ -45,23 +49,6 @@ speakers.
 ${sample}
 </transcript_sample>`;
 }
-
-// NOTE: these schemas target Gemini's `responseSchema`, which is a *subset* of
-// JSON Schema. It does NOT support `additionalProperties`, and a nullable field
-// must use `nullable: true` with a single `type` — never a `["string","null"]`
-// union. Using either makes Gemini reject the request on every call.
-export const CLASSIFY_SCHEMA = {
-  type: "object",
-  properties: {
-    video_type: { type: "string", enum: ["monologue", "dialogue"] },
-    speakers: {
-      type: "array",
-      items: { type: "string" },
-      description: "Speaker labels; one entry for a monologue, two or more for a dialogue.",
-    },
-  },
-  required: ["video_type", "speakers"],
-} as const;
 
 export const SYSTEM_PROMPT = `\
 You are an expert note-taker. You turn the timestamped transcript of a YouTube video into a
@@ -100,7 +87,27 @@ Rules for both:
 - Write in clear English prose. Rewrite spoken filler into readable sentences without changing meaning.
 - A chunk may contain one topic (one section) or several (multiple sections). Split where the speaker
   actually changes topic.
-- Return ONLY the structured object requested — no commentary.`;
+
+Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
+{
+  "video_type": "monologue" | "dialogue",
+  "speakers": ["<label>", ...],
+  "sections": [
+    {
+      "heading": "<short topic heading>",
+      "timestamp_label": "<mm:ss where this section starts, or null>",
+      "content": [
+        {
+          "type": "paragraph" | "bullet" | "quote",
+          "text": "<the prose/point/quote>",
+          "speaker": "<who said it — for a dialogue; omit for a monologue>",
+          "timestamp": "<mm:ss for this block, optional>"
+        }
+      ]
+    }
+  ]
+}
+Every section MUST have a non-empty "content" array. "speaker" and "timestamp" are optional per block.`;
 
 export function chunkUserPrompt(opts: {
   chunkIndex: number;
@@ -156,40 +163,3 @@ Produce the note section(s) for this chunk of the transcript:
 ${chunkText}
 </transcript_chunk>`;
 }
-
-export const CHUNK_SCHEMA = {
-  type: "object",
-  properties: {
-    video_type: { type: "string", enum: ["monologue", "dialogue"] },
-    speakers: {
-      type: "array",
-      items: { type: "string" },
-      description: "Speaker labels used; single entry for a monologue.",
-    },
-    sections: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          heading: { type: "string" },
-          timestamp_label: { type: "string", nullable: true },
-          content: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                type: { type: "string", enum: ["paragraph", "bullet", "quote"] },
-                text: { type: "string" },
-                speaker: { type: "string", nullable: true },
-                timestamp: { type: "string", nullable: true },
-              },
-              required: ["type", "text"],
-            },
-          },
-        },
-        required: ["heading", "content"],
-      },
-    },
-  },
-  required: ["video_type", "speakers", "sections"],
-} as const;

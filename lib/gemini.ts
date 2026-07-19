@@ -1,9 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import {
-  CHUNK_SCHEMA,
   SYSTEM_PROMPT,
   chunkUserPrompt,
-  CLASSIFY_SCHEMA,
   CLASSIFY_SYSTEM_PROMPT,
   classifyUserPrompt,
 } from "./prompts";
@@ -37,6 +35,26 @@ function parseRetrySec(err: unknown): number {
   const m = s.match(/retryDelay"?\s*:?\s*"?(\d+)s/i);
   // Fall back to a value safely above a 5-rpm (12s) window.
   return m ? Number(m[1]) + 1 : 15;
+}
+
+/**
+ * Parse the model's JSON reply defensively. With responseMimeType
+ * "application/json" Gemini returns raw JSON, but we still tolerate a stray code
+ * fence or leading prose by extracting the outermost {...} before parsing — so a
+ * minor formatting slip never fails a chunk.
+ */
+function parseJsonObject<T>(text: string): T {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1)) as T;
+    }
+    throw new Error("Model reply was not valid JSON.");
+  }
 }
 
 let client: GoogleGenAI | null = null;
@@ -84,7 +102,6 @@ export async function classifyVideo(opts: {
       config: {
         systemInstruction: CLASSIFY_SYSTEM_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: CLASSIFY_SCHEMA,
       },
     });
   } catch (err) {
@@ -95,7 +112,7 @@ export async function classifyVideo(opts: {
 
   const text = response.text;
   if (!text) throw new Error("No classification returned.");
-  const parsed = JSON.parse(text) as { video_type: VideoType; speakers?: string[] };
+  const parsed = parseJsonObject<{ video_type: VideoType; speakers?: string[] }>(text);
   return {
     video_type: parsed.video_type === "dialogue" ? "dialogue" : "monologue",
     speakers: Array.isArray(parsed.speakers)
@@ -129,7 +146,6 @@ export async function generateChunk(
       config: {
         systemInstruction: SYSTEM_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: CHUNK_SCHEMA,
       },
     });
   } catch (err) {
@@ -147,11 +163,18 @@ export async function generateChunk(
     throw new Error("No note content was returned for this chunk.");
   }
 
-  const parsed = JSON.parse(text) as GeneratedChunk;
+  const parsed = parseJsonObject<GeneratedChunk>(text);
 
-  for (const section of parsed.sections) {
-    section.content = section.content.map(sanitizeBlock);
-  }
+  // Defensive shaping — the model follows the prompt shape, but never trust it
+  // blindly: coerce to the structure the rest of the app relies on.
+  if (!Array.isArray(parsed.sections)) parsed.sections = [];
+  if (!Array.isArray(parsed.speakers)) parsed.speakers = [];
+  parsed.sections = parsed.sections
+    .filter((s) => s && Array.isArray(s.content))
+    .map((s) => ({
+      ...s,
+      content: s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock),
+    }));
 
   return parsed;
 }
