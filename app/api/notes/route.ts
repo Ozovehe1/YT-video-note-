@@ -4,6 +4,7 @@ import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
 import { fetchTranscript, TranscriptError } from "@/lib/supadata";
 import { chunkTranscript } from "@/lib/chunk";
+import { classifyVideo } from "@/lib/gemini";
 
 export const maxDuration = 60;
 
@@ -52,6 +53,23 @@ export async function POST(request: Request) {
 
   const chunks = chunkTranscript(transcript);
 
+  // Classify monologue vs dialogue up front, from a sample of the WHOLE transcript
+  // (not just the intro, which is usually a solo host). Best-effort: if this fails
+  // or is rate-limited, leave it null and the first chunk's generation will classify.
+  let videoType: "monologue" | "dialogue" | null = null;
+  let speakers: string[] = [];
+  try {
+    const classified = await classifyVideo({
+      title: meta.title,
+      channel: meta.channel,
+      transcript,
+    });
+    videoType = classified.video_type;
+    speakers = classified.speakers;
+  } catch {
+    // ignore — fall back to per-chunk classification
+  }
+
   const { data: note, error } = await supabase
     .from("notes")
     .insert({
@@ -62,6 +80,8 @@ export async function POST(request: Request) {
       channel: meta.channel,
       thumbnail: meta.thumbnail,
       duration_seconds: meta.duration_seconds,
+      video_type: videoType,
+      speakers,
       status: "processing",
       transcript,
       chunk_cursor: 0,

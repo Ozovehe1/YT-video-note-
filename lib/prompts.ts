@@ -1,5 +1,65 @@
 import type { VideoType } from "./types";
 
+// ---------------------------------------------------------------------------
+// Video-type classification (run ONCE, up front, over a sample of the whole
+// transcript — not just the intro, which is usually a solo host monologue).
+// ---------------------------------------------------------------------------
+
+export const CLASSIFY_SYSTEM_PROMPT = `\
+You classify a YouTube video as a MONOLOGUE or a DIALOGUE from an excerpt of its transcript.
+
+- "monologue" — ONE person speaking throughout: a lecture, tutorial, explainer, essay, vlog, talk,
+  or narrated video. No back-and-forth with another person.
+- "dialogue" — TWO OR MORE people in conversation: an interview, podcast, panel, debate, or Q&A.
+
+The transcript is auto-generated and has NO speaker labels, so you must infer structure from the
+words themselves. Signals of a DIALOGUE:
+- Turn-taking: one person asks, another answers; alternating first-person viewpoints.
+- Interview/podcast cues: "welcome to the show", "thanks for having me", "great to be here",
+  "let me ask you", "you mentioned", "so you're saying", "tell me about", introducing a guest.
+- Two or more distinct people are clearly present and responding to each other.
+
+CRUCIAL: the OPENING of a dialogue is very often a single host talking alone (an intro/monologue)
+before the guest speaks. Do NOT judge from the opening alone — weigh the WHOLE excerpt. If there is
+clear question→answer turn-taking anywhere in the excerpt, classify it as "dialogue".
+
+Also identify the speakers: use real names if the transcript states them (hosts often say the
+guest's name in the intro); otherwise use roles like "Host" and "Guest", or "Speaker 1" /
+"Speaker 2". For a monologue, return a single speaker (the narrator/presenter or their name).
+
+Return ONLY the structured object requested.`;
+
+export function classifyUserPrompt(opts: {
+  videoTitle: string;
+  channel: string;
+  sample: string;
+}): string {
+  const { videoTitle, channel, sample } = opts;
+  return `Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
+
+Below is an excerpt sampled from the BEGINNING, MIDDLE and END of the transcript (separated by
+markers) so you can see the overall structure, not just the intro. Classify the video and name the
+speakers.
+
+<transcript_sample>
+${sample}
+</transcript_sample>`;
+}
+
+export const CLASSIFY_SCHEMA = {
+  type: "object",
+  properties: {
+    video_type: { type: "string", enum: ["monologue", "dialogue"] },
+    speakers: {
+      type: "array",
+      items: { type: "string" },
+      description: "Speaker labels; one entry for a monologue, two or more for a dialogue.",
+    },
+  },
+  required: ["video_type", "speakers"],
+  additionalProperties: false,
+} as const;
+
 export const SYSTEM_PROMPT = `\
 You are an expert note-taker. You turn the timestamped transcript of a YouTube video into a
 complete, faithful reading note that mirrors the video's own structure — as if the spoken words
@@ -10,9 +70,11 @@ timestamped transcript plus running context (whether the video is a monologue or
 speakers identified so far, and the previous section's heading). You output the note SECTIONS for
 that chunk only — never re-cover earlier material, never jump ahead.
 
-Determine the video format (given to you after the first chunk; you set it on the first chunk):
+The video's format is decided up front and given to you as context on every chunk:
 - "monologue" — one person speaking (lecture, tutorial, essay, vlog, talk).
 - "dialogue" — a conversation between two or more people (interview, podcast, panel, debate).
+Use the format you are given and echo it back in video_type. (If it is ever missing, infer it from
+this chunk — clear question→answer turn-taking between people means "dialogue".)
 
 For a MONOLOGUE, each section:
 - Has a short heading naming the topic the speaker is covering, and the starting timestamp.
@@ -60,14 +122,26 @@ export function chunkUserPrompt(opts: {
     chunkText,
   } = opts;
 
-  const context = isFirst
-    ? `This is the FIRST chunk. Classify the video as "monologue" or "dialogue" and identify the
-speaker(s). Open the first section as the intro if the speaker sets one up.`
-    : `Established so far — video type: ${videoType}; speakers: ${
-        speakers.length ? speakers.join(", ") : "unknown"
-      }; previous section heading: "${previousHeading ?? ""}". Keep the same video type and speaker
-labels; add a newly-appearing speaker only if one clearly joins. Continue directly after the
-previous section — do not repeat it.`;
+  const typeLine =
+    videoType !== null
+      ? `This video is a ${videoType.toUpperCase()}.`
+      : `Decide whether this is a "monologue" or a "dialogue" from this chunk (question→answer
+turn-taking between people = dialogue) and set video_type accordingly.`;
+  const speakersLine = speakers.length
+    ? ` Speakers identified: ${speakers.join(", ")} — use these labels; add one only if a new person
+clearly joins.`
+    : "";
+  const positionLine = isFirst
+    ? `This is the FIRST chunk — open with the intro if the speaker sets one up.`
+    : `Continue directly after the previous section (heading: "${previousHeading ?? ""}") — do not
+repeat earlier material.`;
+  const dialogueLine =
+    videoType === "dialogue"
+      ? ` This is a conversation: attribute every substantive point to its speaker via the block's
+"speaker" field, and capture the back-and-forth (questions and the answers to them).`
+      : "";
+
+  const context = `${typeLine}${speakersLine} ${positionLine}${dialogueLine}`;
 
   return `Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
 Chunk ${chunkIndex + 1} of ${chunkTotal}.

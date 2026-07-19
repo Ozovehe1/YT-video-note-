@@ -91,10 +91,22 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     }
   }
 
-  // Merge speaker list (union), set video type from the first chunk.
+  // Merge speaker list (union of the up-front classification + what each chunk finds).
   const mergedSpeakers = Array.from(
     new Set([...(note.speakers ?? []), ...generated.speakers]),
   ).slice(0, 12);
+
+  // Video type: the up-front classification wins. One-way safety net — if a chunk
+  // clearly shows a conversation (≥2 distinct speakers) but we'd labelled it a
+  // monologue, upgrade to dialogue. Never downgrade dialogue → monologue.
+  let effectiveType = note.video_type ?? generated.video_type;
+  if (
+    effectiveType === "monologue" &&
+    generated.video_type === "dialogue" &&
+    new Set(generated.speakers.filter(Boolean)).size >= 2
+  ) {
+    effectiveType = "dialogue";
+  }
 
   const nextCursor = cursor + 1;
   const done = nextCursor >= chunks.length;
@@ -104,7 +116,7 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     .from("notes")
     .update({
       chunk_cursor: nextCursor,
-      video_type: note.video_type ?? generated.video_type,
+      video_type: effectiveType,
       speakers: mergedSpeakers,
       total_sections: totalSections,
       status: done ? "ready" : "processing",
