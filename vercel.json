@@ -1,5 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "installCommand": "pnpm install",
   "functions": {
     "app/api/notes/[id]/generate-next/route.ts": { "maxDuration": 60 },
     "app/api/notes/[id]/export/route.ts": { "maxDuration": 60 },
