@@ -1,7 +1,7 @@
 /**
  * Split a timestamped transcript into ordered, time-contiguous chunks so each
  * one can be turned into note sections within a single short serverless request.
- * Chunking by line count (with a rough char ceiling) keeps every Claude call
+ * Chunking by line count (with a rough char ceiling) keeps every Gemini call
  * bounded and lets page count scale with video length.
  */
 const TARGET_LINES = 90; // ~ a few minutes of speech per chunk
