@@ -39,6 +39,13 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ done: true, cursor: chunks.length, total: chunks.length });
   }
 
+  // How many times has THIS chunk already failed? We stash a compact counter in
+  // error_message ("stall:<cursor>:<n>"). It lets us give a genuinely-broken
+  // chunk a bounded number of tries and then skip past it, so one bad chunk can
+  // never freeze a note forever (the "endless spinner" failure mode).
+  const priorAttempts = parseStallAttempts(note.error_message, cursor);
+  const MAX_CHUNK_ATTEMPTS = 4;
+
   // Establish running context from what already exists.
   const { data: lastSection } = await supabase
     .from("note_sections")
@@ -82,14 +89,37 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     }
   }
   if (!generated) {
-    // Transient failure. Do NOT fail the note or bother the user — leave the
-    // cursor where it is and signal "retry"; the background driver picks the
-    // same chunk up again and it recovers on its own. Log it so a *persistent*
-    // failure (which would otherwise look like an endless spinner) is visible.
+    const attempts = priorAttempts + 1;
     console.error(
-      `[generate-next] chunk ${cursor} failed for note ${id} after retries:`,
+      `[generate-next] chunk ${cursor} failed for note ${id} (attempt ${attempts}/${MAX_CHUNK_ATTEMPTS}):`,
       lastErr,
     );
+
+    if (attempts >= MAX_CHUNK_ATTEMPTS) {
+      // This chunk is genuinely stuck (e.g. content the model won't process).
+      // Rather than freeze the note forever, skip it and move on — the note
+      // still completes; at worst one stretch of the video is thinner. The user
+      // is never left waiting endlessly.
+      const nextCursor = cursor + 1;
+      const done = nextCursor >= chunks.length;
+      await supabase
+        .from("notes")
+        .update({
+          chunk_cursor: nextCursor,
+          error_message: null,
+          status: done ? "ready" : "processing",
+          transcript: done ? null : note.transcript,
+        })
+        .eq("id", id);
+      console.warn(`[generate-next] skipped chunk ${cursor} for note ${id} after ${attempts} attempts.`);
+      return NextResponse.json({ skipped: true, done, cursor: nextCursor, total: chunks.length });
+    }
+
+    // Not yet at the cap — record the attempt and let the driver retry this chunk.
+    await supabase
+      .from("notes")
+      .update({ error_message: `stall:${cursor}:${attempts}` })
+      .eq("id", id);
     return NextResponse.json({ retry: true }, { status: 503 });
   }
 
@@ -139,6 +169,7 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
       total_sections: totalSections,
       status: done ? "ready" : "processing",
       transcript: done ? null : note.transcript, // clear transcript once complete
+      error_message: null, // this chunk succeeded — clear any stall counter
     })
     .eq("id", id);
 
@@ -149,6 +180,18 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     sectionsAdded: rows.length,
     totalSections,
   });
+}
+
+/**
+ * Read the per-chunk failure counter stashed in error_message ("stall:<cursor>:<n>").
+ * Only counts if it refers to the chunk we're on now — a counter for an earlier
+ * cursor is stale (we advanced past it) and resets to 0.
+ */
+function parseStallAttempts(errorMessage: string | null, cursor: number): number {
+  if (!errorMessage) return 0;
+  const m = errorMessage.match(/^stall:(\d+):(\d+)$/);
+  if (!m) return 0;
+  return Number(m[1]) === cursor ? Number(m[2]) : 0;
 }
 
 async function finalize(

@@ -102,6 +102,11 @@ export async function classifyVideo(opts: {
       config: {
         systemInstruction: CLASSIFY_SYSTEM_PROMPT,
         responseMimeType: "application/json",
+        maxOutputTokens: 2048,
+        // gemini-2.5-flash "thinks" by default, which can silently consume the
+        // whole output budget and return empty text. This is a small, well-scoped
+        // task — no thinking needed. Disabling it guarantees a non-empty reply.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
   } catch (err) {
@@ -146,6 +151,12 @@ export async function generateChunk(
       config: {
         systemInstruction: SYSTEM_PROMPT,
         responseMimeType: "application/json",
+        // Give the whole budget to the note. gemini-2.5-flash "thinks" by default;
+        // on a dense chunk that thinking can eat the entire output budget and
+        // return empty/truncated text — the intermittent "froze mid-note" bug.
+        // Disable thinking and cap output so every chunk returns a complete note.
+        maxOutputTokens: 8192,
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
   } catch (err) {
