@@ -1,0 +1,56 @@
+import Link from "next/link";
+import { createClient } from "@/lib/supabase/server";
+import { signOut } from "@/app/actions/auth";
+import { Brand } from "./brand";
+import { NavAccount } from "./nav-account";
+
+export async function Nav() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return (
+    <header className="sticky top-0 z-40 border-b border-hairline bg-paper/85 backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
+        <Brand />
+        <nav className="flex items-center gap-1 sm:gap-2">
+          {user ? (
+            <>
+              <NavLink href="/library">Library</NavLink>
+              <NavLink href="/new">New note</NavLink>
+              <NavAccount email={user.email ?? ""} signOutAction={signOut} />
+            </>
+          ) : (
+            <>
+              <NavLink href="/#how">How it works</NavLink>
+              <Link
+                href="/login"
+                className="rounded-lg px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:text-ink"
+              >
+                Sign in
+              </Link>
+              <Link
+                href="/signup"
+                className="rounded-lg bg-oxblood px-3.5 py-2 text-sm font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
+              >
+                Get started
+              </Link>
+            </>
+          )}
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="hidden rounded-lg px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:text-ink sm:inline-block"
+    >
+      {children}
+    </Link>
+  );
+}

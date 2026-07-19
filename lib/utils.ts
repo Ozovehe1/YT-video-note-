@@ -1,0 +1,67 @@
+import type { ClassValue } from "./cn-types";
+
+/** Tiny classnames joiner (avoids a clsx/tailwind-merge dependency). */
+export function cn(...values: ClassValue[]): string {
+  const out: string[] = [];
+  for (const v of values) {
+    if (!v) continue;
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) out.push(cn(...v));
+    else if (typeof v === "object") {
+      for (const [k, on] of Object.entries(v)) if (on) out.push(k);
+    }
+  }
+  return out.join(" ");
+}
+
+const VIDEO_ID_PATTERNS = [
+  /(?:youtube\.com\/watch\?(?:.*&)?v=)([A-Za-z0-9_-]{11})/,
+  /(?:youtu\.be\/)([A-Za-z0-9_-]{11})/,
+  /(?:youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/,
+  /(?:youtube\.com\/live\/)([A-Za-z0-9_-]{11})/,
+  /(?:youtube\.com\/embed\/)([A-Za-z0-9_-]{11})/,
+];
+
+/** Extract an 11-char YouTube video id from any URL form, or return the id itself. */
+export function extractVideoId(input: string): string | null {
+  const url = input.trim();
+  for (const p of VIDEO_ID_PATTERNS) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  if (/^[A-Za-z0-9_-]{11}$/.test(url)) return url;
+  return null;
+}
+
+export function looksLikeUrl(input: string): boolean {
+  return /youtube\.com|youtu\.be/.test(input) || /^[A-Za-z0-9_-]{11}$/.test(input.trim());
+}
+
+export function formatDuration(seconds: number | null): string | null {
+  if (seconds == null) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** ISO 8601 duration (PT#H#M#S) → seconds. */
+export function parseIsoDuration(iso: string): number | null {
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return null;
+  const [, h, min, s] = m;
+  return (Number(h) || 0) * 3600 + (Number(min) || 0) * 60 + (Number(s) || 0);
+}
+
+export function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const diff = Date.now() - then;
+  const day = 86400000;
+  if (diff < day) return "today";
+  if (diff < 2 * day) return "yesterday";
+  const days = Math.floor(diff / day);
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}

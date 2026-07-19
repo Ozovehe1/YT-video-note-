@@ -1,0 +1,27 @@
+/**
+ * Split a timestamped transcript into ordered, time-contiguous chunks so each
+ * one can be turned into note sections within a single short serverless request.
+ * Chunking by line count (with a rough char ceiling) keeps every Claude call
+ * bounded and lets page count scale with video length.
+ */
+const TARGET_LINES = 90; // ~ a few minutes of speech per chunk
+const MAX_CHARS = 9000; // hard ceiling so a dense chunk still fits comfortably
+
+export function chunkTranscript(transcript: string): string[] {
+  const lines = transcript.split("\n").filter((l) => l.trim().length > 0);
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let chars = 0;
+
+  for (const line of lines) {
+    current.push(line);
+    chars += line.length + 1;
+    if (current.length >= TARGET_LINES || chars >= MAX_CHARS) {
+      chunks.push(current.join("\n"));
+      current = [];
+      chars = 0;
+    }
+  }
+  if (current.length) chunks.push(current.join("\n"));
+  return chunks;
+}
