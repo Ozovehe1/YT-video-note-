@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { generateChunk } from "@/lib/gemini";
+import { generateChunk, RateLimitError } from "@/lib/gemini";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -63,6 +63,14 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
       chunkText: chunks[cursor],
     });
   } catch (err) {
+    // Rate limit: don't fail the note — tell the client to wait and retry this
+    // same chunk (cursor isn't advanced, so a retry re-attempts it).
+    if (err instanceof RateLimitError) {
+      return NextResponse.json(
+        { rateLimited: true, retryAfter: err.retryAfterSec },
+        { status: 429 },
+      );
+    }
     const message = err instanceof Error ? err.message : "Generation failed.";
     await supabase.from("notes").update({ status: "error", error_message: message }).eq("id", id);
     return NextResponse.json({ error: message }, { status: 502 });

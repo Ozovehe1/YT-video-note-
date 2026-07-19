@@ -4,8 +4,11 @@
  * Chunking by line count (with a rough char ceiling) keeps every Gemini call
  * bounded and lets page count scale with video length.
  */
-const TARGET_LINES = 90; // ~ a few minutes of speech per chunk
-const MAX_CHARS = 9000; // hard ceiling so a dense chunk still fits comfortably
+// Larger chunks = fewer Gemini calls, which matters on the free tier (5 req/min).
+// Gemini 2.5 handles big context easily, so each request still completes well
+// within the serverless limit while roughly halving the number of requests.
+const TARGET_LINES = 160; // ~ 6–8 minutes of speech per chunk
+const MAX_CHARS = 16000; // hard ceiling so a dense chunk still fits comfortably
 
 export function chunkTranscript(transcript: string): string[] {
   const lines = transcript.split("\n").filter((l) => l.trim().length > 0);

@@ -5,6 +5,33 @@ import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 export const MODEL =
   process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
+/** Thrown when Gemini returns 429 RESOURCE_EXHAUSTED, carrying its suggested wait. */
+export class RateLimitError extends Error {
+  retryAfterSec: number;
+  constructor(retryAfterSec: number) {
+    super("Gemini free-tier rate limit reached.");
+    this.name = "RateLimitError";
+    this.retryAfterSec = retryAfterSec;
+  }
+}
+
+function isRateLimit(err: unknown): boolean {
+  const e = err as { status?: unknown; code?: unknown; message?: unknown };
+  const s = String(e?.message ?? err ?? "");
+  return (
+    e?.status === 429 ||
+    e?.code === 429 ||
+    /RESOURCE_EXHAUSTED|"code"\s*:\s*429|\b429\b/.test(s)
+  );
+}
+
+function parseRetrySec(err: unknown): number {
+  const s = String((err as { message?: unknown })?.message ?? err ?? "");
+  const m = s.match(/retryDelay"?\s*:?\s*"?(\d+)s/i);
+  // Fall back to a value safely above a 5-rpm (12s) window.
+  return m ? Number(m[1]) + 1 : 15;
+}
+
 let client: GoogleGenAI | null = null;
 
 function gemini(): GoogleGenAI {
@@ -36,15 +63,21 @@ export async function generateChunk(
 ): Promise<GeneratedChunk> {
   const isFirst = opts.chunkIndex === 0;
 
-  const response = await gemini().models.generateContent({
-    model: MODEL,
-    contents: chunkUserPrompt({ ...opts, isFirst }),
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      responseMimeType: "application/json",
-      responseSchema: CHUNK_SCHEMA,
-    },
-  });
+  let response;
+  try {
+    response = await gemini().models.generateContent({
+      model: MODEL,
+      contents: chunkUserPrompt({ ...opts, isFirst }),
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseSchema: CHUNK_SCHEMA,
+      },
+    });
+  } catch (err) {
+    if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    throw err;
+  }
 
   const text = response.text;
 

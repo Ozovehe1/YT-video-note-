@@ -7,6 +7,12 @@ import type { SearchResult } from "@/lib/types";
 import { looksLikeUrl } from "@/lib/utils";
 import { ResultCard } from "./result-card";
 
+// Gemini free tier allows only a few generate requests per minute (2.5-flash = 5/min).
+// Pace the loop to stay under that. Override with NEXT_PUBLIC_GEMINI_RPM if you upgrade.
+const RPM = Number(process.env.NEXT_PUBLIC_GEMINI_RPM) || 5;
+const MIN_INTERVAL_MS = Math.ceil(60000 / RPM) + 1000; // + safety buffer
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 type Phase = "idle" | "searching" | "results" | "creating" | "generating" | "error";
 
 export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
@@ -16,6 +22,7 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0, sections: 0 });
+  const [rateWait, setRateWait] = useState(0); // seconds until next request, 0 = active
   const startedRef = useRef(false);
 
   const runSearch = useCallback(async (q: string) => {
@@ -35,11 +42,36 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
 
   const generate = useCallback(
     async (noteId: string) => {
-      // Loop generate-next until done, keeping each call short.
+      // Visible countdown so the user sees why it's pacing / waiting.
+      async function countdown(sec: number) {
+        for (let s = Math.ceil(sec); s > 0; s--) {
+          setRateWait(s);
+          await sleep(1000);
+        }
+        setRateWait(0);
+      }
+
+      let lastStart = 0;
+      // Loop generate-next until done, spacing calls to respect the free-tier RPM.
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        // Pace: keep at least MIN_INTERVAL_MS between request starts.
+        const since = Date.now() - lastStart;
+        if (lastStart && since < MIN_INTERVAL_MS) {
+          await countdown((MIN_INTERVAL_MS - since) / 1000);
+        }
+        lastStart = Date.now();
+
         const res = await fetch(`/api/notes/${noteId}/generate-next`, { method: "POST" });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+
+        // Hit the limit anyway → back off using Gemini's suggested delay, retry same chunk.
+        if (res.status === 429) {
+          await countdown(Math.max(5, data.retryAfter ?? 15));
+          lastStart = 0; // we already waited; don't double-pace
+          continue;
+        }
+
         if (!res.ok) throw new Error(data.error || "Generation failed.");
         setProgress({
           done: data.cursor ?? 0,
@@ -120,8 +152,15 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
             {progress.done} / {progress.total} chunks
           </p>
         )}
+        {rateWait > 0 && (
+          <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-oxblood/8 px-3 py-1.5 text-sm text-oxblood">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Pacing for the free tier — next section in ~{rateWait}s
+          </p>
+        )}
         <p className="mt-6 text-sm text-muted">
-          You can keep this open — long videos take a minute or two.
+          Keep this open. The free tier allows {RPM} sections per minute, so a long video is
+          written gradually — it&rsquo;ll finish on its own.
         </p>
       </div>
     );
