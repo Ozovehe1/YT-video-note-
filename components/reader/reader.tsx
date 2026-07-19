@@ -223,11 +223,12 @@ export function Reader({
             <div className="mb-8 flex items-center justify-between gap-3 rounded-xl border border-oxblood/20 bg-oxblood/5 px-4 py-3 text-sm">
               <span className="flex items-center gap-2 text-ink">
                 <Loader2 className="h-4 w-4 animate-spin text-oxblood" />
-                Still being written — more sections are on the way.
+                Writing this note — new sections appear as they&rsquo;re ready. You can leave; it
+                keeps going.
               </span>
               <button
                 onClick={() => router.refresh()}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-oxblood hover:bg-oxblood/10"
+                className="inline-flex flex-none items-center gap-1 rounded-lg px-2 py-1 text-oxblood hover:bg-oxblood/10"
               >
                 <RotateCw className="h-3.5 w-3.5" /> Refresh
               </button>
@@ -235,7 +236,14 @@ export function Reader({
           )}
 
           {total === 0 ? (
-            <p className="text-muted">No sections yet.</p>
+            processing ? (
+              <div className="flex flex-col items-center py-16 text-center">
+                <Loader2 className="h-6 w-6 animate-spin text-oxblood" />
+                <p className="mt-4 text-muted">Writing the first section…</p>
+              </div>
+            ) : (
+              <p className="text-muted">No sections yet.</p>
+            )
           ) : (
             <SectionView section={sections[index]} />
           )}
