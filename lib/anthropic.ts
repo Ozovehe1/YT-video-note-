@@ -1,15 +1,21 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { CHUNK_SCHEMA, SYSTEM_PROMPT, chunkUserPrompt } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
-// Sonnet 5: near-Opus quality on this task at a much lower price. Supports adaptive
-// thinking (on by default) and output_config/structured outputs, which is all we use.
-export const MODEL = "claude-sonnet-5";
+export const MODEL =
+  process.env.GEMINI_MODEL || "gemini-2.5-pro";
 
-let client: Anthropic | null = null;
-function anthropic(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set.");
-  client ??= new Anthropic();
+let client: GoogleGenAI | null = null;
+
+function gemini(): GoogleGenAI {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not set.");
+  }
+
+  client ??= new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
+
   return client;
 }
 
@@ -25,42 +31,44 @@ interface GenerateOpts {
 }
 
 /** Generate the note section(s) for one transcript chunk as structured blocks. */
-export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
+export async function generateChunk(
+  opts: GenerateOpts,
+): Promise<GeneratedChunk> {
   const isFirst = opts.chunkIndex === 0;
-  const message = await anthropic().messages.create({
+
+  const response = await gemini().models.generateContent({
     model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    system: SYSTEM_PROMPT,
-    output_config: { format: { type: "json_schema", schema: CHUNK_SCHEMA } },
-    messages: [
-      {
-        role: "user",
-        content: chunkUserPrompt({ ...opts, isFirst }),
-      },
-    ],
+    contents: chunkUserPrompt({ ...opts, isFirst }),
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
+      responseMimeType: "application/json",
+      responseSchema: CHUNK_SCHEMA,
+    },
   });
 
-  if (message.stop_reason === "refusal") {
-    throw new Error("The model declined to process this video's content.");
-  }
+  const text = response.text;
 
-  const textBlock = message.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
+  if (!text) {
     throw new Error("No note content was returned for this chunk.");
   }
 
-  const parsed = JSON.parse(textBlock.text) as GeneratedChunk;
-  // Defensive normalization — the schema guarantees shape, but clean null speakers.
+  const parsed = JSON.parse(text) as GeneratedChunk;
+
   for (const section of parsed.sections) {
     section.content = section.content.map(sanitizeBlock);
   }
+
   return parsed;
 }
 
 function sanitizeBlock(b: NoteBlock): NoteBlock {
-  const out: NoteBlock = { type: b.type, text: b.text } as NoteBlock;
+  const out: NoteBlock = {
+    type: b.type,
+    text: b.text,
+  } as NoteBlock;
+
   if (b.speaker) out.speaker = b.speaker;
   if (b.timestamp) out.timestamp = b.timestamp;
+
   return out;
 }
