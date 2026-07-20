@@ -93,6 +93,7 @@ async function callOnce(opts: {
   user: string;
   maxTokens: number;
   timeoutMs?: number;
+  temperature?: number;
 }): Promise<{ text: string; finishReason: string | null }> {
   if (!process.env.NVIDIA_API_KEY) throw new Error("NVIDIA_API_KEY is not set.");
 
@@ -102,7 +103,10 @@ async function callOnce(opts: {
       { role: "system", content: opts.system },
       { role: "user", content: opts.user },
     ],
-    temperature: 1,
+    // Low temperature: note generation is a faithful transformation, not creative
+    // writing. It keeps the wording close to the source and the JSON/timestamp
+    // format stable.
+    temperature: opts.temperature ?? 0.3,
     top_p: 0.95,
     max_tokens: opts.maxTokens,
     stream: false,

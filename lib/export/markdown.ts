@@ -1,8 +1,10 @@
 import type { Note, NoteSection, NoteBlock } from "@/lib/types";
+import { normalizeTimestamp } from "@/lib/utils";
 
 function blockLine(b: NoteBlock): string {
   const prefix = b.speaker ? `**${b.speaker}:** ` : "";
-  const ts = b.timestamp ? ` \`[${b.timestamp}]\`` : "";
+  const tsValue = normalizeTimestamp(b.timestamp);
+  const ts = tsValue ? ` \`[${tsValue}]\`` : "";
   switch (b.type) {
     case "bullet":
       return `- ${prefix}${b.text}${ts}`;
@@ -26,7 +28,8 @@ export function toMarkdown(note: Note, sections: NoteSection[]): string {
   lines.push("");
 
   for (const s of sections) {
-    const ts = s.timestamp_label ? ` [${s.timestamp_label}]` : "";
+    const tsValue = normalizeTimestamp(s.timestamp_label);
+    const ts = tsValue ? `  ${tsValue}` : ""; // bare value, no brackets — matches the other exports
     lines.push(`## ${s.heading}${ts}`);
     lines.push("");
     let prevBullet = false;

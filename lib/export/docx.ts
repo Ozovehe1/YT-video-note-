@@ -8,6 +8,7 @@ import {
   ExternalHyperlink,
 } from "docx";
 import type { Note, NoteSection, NoteBlock } from "@/lib/types";
+import { normalizeTimestamp } from "@/lib/utils";
 
 const OXBLOOD = "8A2B22";
 const MUTED = "5C5446";
@@ -16,7 +17,8 @@ function runs(b: NoteBlock): TextRun[] {
   const out: TextRun[] = [];
   if (b.speaker) out.push(new TextRun({ text: `${b.speaker}: `, bold: true, color: OXBLOOD }));
   out.push(new TextRun({ text: b.text, italics: b.type === "quote" }));
-  if (b.timestamp) out.push(new TextRun({ text: `  [${b.timestamp}]`, color: MUTED, size: 16 }));
+  const tsValue = normalizeTimestamp(b.timestamp);
+  if (tsValue) out.push(new TextRun({ text: `  [${tsValue}]`, color: MUTED, size: 16 }));
   return out;
 }
 
@@ -58,8 +60,14 @@ export async function toDocx(note: Note, sections: NoteSection[]): Promise<Buffe
         spacing: { before: 240, after: 80 },
         children: [
           new TextRun({ text: s.heading, font: "Georgia" }),
-          ...(s.timestamp_label
-            ? [new TextRun({ text: `  ${s.timestamp_label}`, color: MUTED, size: 18 })]
+          ...(normalizeTimestamp(s.timestamp_label)
+            ? [
+                new TextRun({
+                  text: `  ${normalizeTimestamp(s.timestamp_label)}`,
+                  color: MUTED,
+                  size: 18,
+                }),
+              ]
             : []),
         ],
       }),

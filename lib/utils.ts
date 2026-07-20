@@ -46,6 +46,27 @@ export function formatDuration(seconds: number | null): string | null {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/**
+ * Normalize a model-produced timestamp to one canonical form so timestamps look
+ * identical everywhere (reader + every export). Strips any wrapping brackets the
+ * model added (avoiding "[[5:03]]"), parses h:mm:ss / m:ss / bare seconds, and
+ * re-emits via formatDuration. Unparseable input returns the cleaned string;
+ * empty returns null.
+ */
+export function normalizeTimestamp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = String(raw).trim().replace(/^[[({\s]+/, "").replace(/[\])}\s]+$/, "").trim();
+  if (!cleaned) return null;
+  const parts = cleaned.split(":");
+  if (parts.length >= 2 && parts.length <= 3 && parts.every((p) => /^\d{1,3}$/.test(p))) {
+    const nums = parts.map(Number);
+    const [h, m, s] = parts.length === 3 ? nums : [0, nums[0], nums[1]];
+    return formatDuration(h * 3600 + m * 60 + s);
+  }
+  if (/^\d+$/.test(cleaned)) return formatDuration(Number(cleaned));
+  return cleaned;
+}
+
 /** ISO 8601 duration (PT#H#M#S) → seconds. */
 export function parseIsoDuration(iso: string): number | null {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);

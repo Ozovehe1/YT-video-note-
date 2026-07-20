@@ -1,5 +1,6 @@
 import epub from "epub-gen-memory";
 import type { Note, NoteSection, NoteBlock } from "@/lib/types";
+import { normalizeTimestamp } from "@/lib/utils";
 
 function esc(s: string): string {
   return s
@@ -10,7 +11,8 @@ function esc(s: string): string {
 
 function blockHtml(b: NoteBlock): string {
   const speaker = b.speaker ? `<strong style="color:#8A2B22">${esc(b.speaker)}:</strong> ` : "";
-  const ts = b.timestamp ? ` <span style="color:#8a8172;font-size:0.8em">[${esc(b.timestamp)}]</span>` : "";
+  const tsValue = normalizeTimestamp(b.timestamp);
+  const ts = tsValue ? ` <span style="color:#8a8172;font-size:0.8em">[${esc(tsValue)}]</span>` : "";
   switch (b.type) {
     case "bullet":
       return `<li>${speaker}${esc(b.text)}${ts}</li>`;
@@ -23,7 +25,8 @@ function blockHtml(b: NoteBlock): string {
 
 function sectionHtml(s: NoteSection): string {
   const parts: string[] = [];
-  const ts = s.timestamp_label ? ` <span style="color:#8a8172;font-weight:normal;font-size:0.7em">${esc(s.timestamp_label)}</span>` : "";
+  const tsLabel = normalizeTimestamp(s.timestamp_label);
+  const ts = tsLabel ? ` <span style="color:#8a8172;font-weight:normal;font-size:0.7em">${esc(tsLabel)}</span>` : "";
   parts.push(`<h2 style="font-family:Georgia,serif">${esc(s.heading)}${ts}</h2>`);
   let inList = false;
   for (const b of s.content) {

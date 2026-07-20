@@ -1,11 +1,13 @@
 import type { NoteSection, NoteBlock } from "@/lib/types";
+import { normalizeTimestamp } from "@/lib/utils";
 
 function BlockView({ b }: { b: NoteBlock }) {
   const speaker = b.speaker ? (
     <span className="font-semibold text-oxblood">{b.speaker}: </span>
   ) : null;
-  const ts = b.timestamp ? (
-    <span className="ml-1 font-mono text-[0.72em] text-muted">[{b.timestamp}]</span>
+  const tsValue = normalizeTimestamp(b.timestamp);
+  const ts = tsValue ? (
+    <span className="ml-1 font-mono text-[0.72em] text-muted">[{tsValue}]</span>
   ) : null;
 
   if (b.type === "bullet") {
@@ -49,8 +51,10 @@ export function SectionView({ section }: { section: NoteSection }) {
     <section className="mb-12">
       <div className="mb-4 flex items-baseline gap-3">
         <h2 className="text-[1.5em] leading-tight">{section.heading}</h2>
-        {section.timestamp_label && (
-          <span className="font-mono text-[0.72em] text-muted">{section.timestamp_label}</span>
+        {normalizeTimestamp(section.timestamp_label) && (
+          <span className="font-mono text-[0.72em] text-muted">
+            {normalizeTimestamp(section.timestamp_label)}
+          </span>
         )}
       </div>
       {groups.map((g, i) =>

@@ -8,6 +8,7 @@ import {
   renderToBuffer,
 } from "@react-pdf/renderer";
 import type { Note, NoteSection, NoteBlock } from "@/lib/types";
+import { normalizeTimestamp } from "@/lib/utils";
 
 const OX = "#8A2B22";
 const INK = "#221E16";
@@ -36,11 +37,12 @@ const s = StyleSheet.create({
 });
 
 function inline(b: NoteBlock) {
+  const tsValue = normalizeTimestamp(b.timestamp);
   return (
     <>
       {b.speaker ? <Text style={s.speaker}>{b.speaker}: </Text> : null}
       <Text>{b.text}</Text>
-      {b.timestamp ? <Text style={s.ts}>{"  [" + b.timestamp + "]"}</Text> : null}
+      {tsValue ? <Text style={s.ts}>{"  [" + tsValue + "]"}</Text> : null}
     </>
   );
 }
@@ -83,7 +85,9 @@ function NoteDoc({ note, sections }: { note: Note; sections: NoteSection[] }) {
           <View key={sec.id} wrap>
             <Text style={s.h2}>
               {sec.heading}
-              {sec.timestamp_label ? <Text style={s.h2ts}>{"   " + sec.timestamp_label}</Text> : null}
+              {normalizeTimestamp(sec.timestamp_label) ? (
+                <Text style={s.h2ts}>{"   " + normalizeTimestamp(sec.timestamp_label)}</Text>
+              ) : null}
             </Text>
             {sec.content.map((b, i) => (
               <Block key={i} b={b} />
