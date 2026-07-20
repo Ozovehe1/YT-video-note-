@@ -164,12 +164,30 @@ export function BackgroundGenerator() {
       }
     }
 
-    claimLeadershipIfVacant();
+    // A VISIBLE tab should be the leader: browsers throttle timers in background
+    // tabs, so if a hidden tab held the lock, generation would crawl. The visible
+    // tab steals leadership; hidden tabs only lead when no tab is visible.
+    const visible = () =>
+      typeof document === "undefined" || document.visibilityState === "visible";
+    function preferLeadership() {
+      if (visible()) writeLeader();
+      else claimLeadershipIfVacant();
+    }
+
+    preferLeadership();
     tick(); // resume immediately on load
     const iv = setInterval(tick, POLL_MS);
     const hb = setInterval(() => {
-      if (isLeader()) writeLeader(); // keep the claim fresh while we hold it
+      if (visible()) writeLeader(); // a visible tab keeps/takes the lock
+      else if (isLeader()) writeLeader(); // a hidden leader keeps it until someone visible steals
     }, HEARTBEAT_MS);
+    const onVisible = () => {
+      if (visible()) {
+        writeLeader(); // take over as soon as this tab is foregrounded
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
     const onUnload = () => releaseLeadership();
     window.addEventListener("beforeunload", onUnload);
 
@@ -177,6 +195,7 @@ export function BackgroundGenerator() {
       stopped = true;
       clearInterval(iv);
       clearInterval(hb);
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("beforeunload", onUnload);
       releaseLeadership();
     };

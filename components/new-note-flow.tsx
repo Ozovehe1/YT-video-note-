@@ -47,6 +47,9 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Could not start the note.");
+        // Invalidate the client router cache so the new note shows up immediately
+        // in the Library / home (even before its first section is written).
+        router.refresh();
         router.push(`/read/${data.id}`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong.");

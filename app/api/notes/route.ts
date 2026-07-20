@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
@@ -93,6 +94,10 @@ export async function POST(request: Request) {
   if (error || !note) {
     return NextResponse.json({ error: "Could not save the note." }, { status: 500 });
   }
+
+  // Make sure the new note appears right away wherever notes are listed.
+  revalidatePath("/library");
+  revalidatePath("/");
 
   return NextResponse.json({ id: note.id, chunkTotal: chunks.length });
 }
