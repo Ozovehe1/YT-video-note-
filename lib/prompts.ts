@@ -126,13 +126,14 @@ Rules for both:
   consecutive fragments back into whole sentences, and group related sentences into natural
   paragraphs. Every content block must be one or more COMPLETE sentences (a finished thought).
   NEVER cut a sentence in half, and NEVER start a new block just because a new timestamp appeared.
-- TIMESTAMPS ARE SPARSE ANCHORS, NOT PER-LINE TAGS. They only help a reader jump to a spot in the
-  video; they must never fragment the writing. Rules:
+- TIMESTAMPS ANCHOR PARAGRAPHS — they let a reader jump to that spot in the video. Rules:
     • Set each section's "timestamp_label" to the transcript marker of the line where the section
       starts.
-    • Within a section, add a block "timestamp" ONLY at a meaningful anchor — the start of a new
-      speaker's turn, or a standout quote — using the marker of that block's FIRST line. Most
-      paragraphs need no timestamp at all.
+    • Give EACH paragraph and quote block a "timestamp" equal to the transcript marker of the line
+      it STARTS on. Timestamps should recur regularly — roughly one per paragraph — NOT one per
+      section and NOT one per caption fragment.
+    • A timestamp must NEVER fall in the middle of a sentence. First merge caption fragments into
+      whole sentences/paragraphs, THEN put the one timestamp at the paragraph's start.
     • COPY the marker verbatim from the transcript — never invent, estimate, round, or reformat a
       time, and never put brackets inside the value (just the digits, e.g. "5:03").
 - Give every section the SAME depth of coverage — never thin out or rush later parts of the video;
@@ -153,7 +154,7 @@ Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of 
           "type": "paragraph" | "bullet" | "quote",
           "text": "<the speaker's own words, cleaned into COMPLETE, punctuated, correctly-spelled sentences — merge caption fragments, no filler/repeats, never cut mid-sentence>",
           "speaker": "<who said it — only when the speaker changes; 'Narrator' for voiceover; omit for a monologue>",
-          "timestamp": "<optional anchor at the block's START, e.g. 5:03 — only for a new turn/notable quote, not every block>"
+          "timestamp": "<the transcript marker of the line this paragraph STARTS on, e.g. 5:03 — one per paragraph, at its start, never mid-sentence>"
         }
       ]
     }

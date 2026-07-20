@@ -9,8 +9,9 @@ function esc(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function blockHtml(b: NoteBlock): string {
-  const speaker = b.speaker ? `<strong style="color:#8A2B22">${esc(b.speaker)}:</strong> ` : "";
+function blockHtml(b: NoteBlock, showSpeaker: boolean): string {
+  const speaker =
+    b.speaker && showSpeaker ? `<strong style="color:#8A2B22">${esc(b.speaker)}:</strong> ` : "";
   const tsValue = normalizeTimestamp(b.timestamp);
   const ts = tsValue ? ` <span style="color:#8a8172;font-size:0.8em">[${esc(tsValue)}]</span>` : "";
   switch (b.type) {
@@ -29,6 +30,7 @@ function sectionHtml(s: NoteSection): string {
   const ts = tsLabel ? ` <span style="color:#8a8172;font-weight:normal;font-size:0.7em">${esc(tsLabel)}</span>` : "";
   parts.push(`<h2 style="font-family:Georgia,serif">${esc(s.heading)}${ts}</h2>`);
   let inList = false;
+  let prevSpeaker: string | undefined;
   for (const b of s.content) {
     if (b.type === "bullet" && !inList) {
       parts.push("<ul>");
@@ -37,7 +39,9 @@ function sectionHtml(s: NoteSection): string {
       parts.push("</ul>");
       inList = false;
     }
-    parts.push(blockHtml(b));
+    const showSpeaker = !!b.speaker && b.speaker !== prevSpeaker;
+    if (b.speaker) prevSpeaker = b.speaker;
+    parts.push(blockHtml(b, showSpeaker));
   }
   if (inList) parts.push("</ul>");
   return parts.join("\n");

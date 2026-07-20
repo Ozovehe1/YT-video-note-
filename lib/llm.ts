@@ -489,19 +489,25 @@ function cleanText(text: string, speakers: string[]): string {
   return t;
 }
 
-/** Merge back-to-back paragraph blocks from the same speaker into one (keeps the first timestamp). */
-function mergeParagraphs(content: NoteBlock[]): NoteBlock[] {
+/**
+ * Stitch back only TRUE fragments: join an adjacent same-speaker paragraph into the
+ * previous one ONLY when the previous text didn't end a sentence (a cut-off caption).
+ * Complete paragraphs stay separate so each keeps its own timestamp/structure.
+ */
+function stitchFragments(content: NoteBlock[]): NoteBlock[] {
   const out: NoteBlock[] = [];
   for (const b of content) {
     const last = out[out.length - 1];
+    const prevUnfinished = last ? !/[.!?…"')\]]\s*$/.test(last.text) : false;
     if (
       last &&
       last.type === "paragraph" &&
       b.type === "paragraph" &&
-      (last.speaker ?? "") === (b.speaker ?? "")
+      (last.speaker ?? "") === (b.speaker ?? "") &&
+      prevUnfinished
     ) {
       last.text = `${last.text} ${b.text}`.replace(/\s{2,}/g, " ").trim();
-      continue;
+      continue; // keep the earlier block's timestamp
     }
     out.push({ ...b });
   }
@@ -525,7 +531,7 @@ function shapeSections(raw: unknown, speakers: string[]): Section[] {
         .filter((b) => b && typeof b.text === "string")
         .map((b) => sanitizeBlock(b, speakers))
         .filter((b) => b.text.length > 0);
-      content = mergeParagraphs(content);
+      content = stitchFragments(content);
       return { ...s, content };
     })
     .filter((s) => s.content.length > 0);
