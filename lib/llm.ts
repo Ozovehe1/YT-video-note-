@@ -38,6 +38,10 @@ export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
 // Kept for backward-compat / diagnostics; classification uses the same fallback list.
 export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
 
+// The note DRAFT (where speaker attribution happens) prefers a stronger model;
+// it falls back to the fast MODEL if the strong one is slow/unavailable.
+export const DRAFT_MODEL = process.env.LLM_DRAFT_MODEL || "deepseek-ai/deepseek-v4-pro";
+
 /** Thrown when the provider returns 429, carrying its suggested wait. */
 export class RateLimitError extends Error {
   retryAfterSec: number;
@@ -197,6 +201,35 @@ async function chat(opts: {
     }
   }
   throw lastErr ?? new Error("All candidate models are unavailable.");
+}
+
+/**
+ * Try an explicit, ordered list of {model, timeoutMs} attempts — used for the note
+ * DRAFT so a strong-but-slow model gets a bounded window, then a fast model backs
+ * it up, all within the serverless budget. Returns which model actually served.
+ */
+async function chatPreferred(
+  attempts: Array<{ model: string; timeoutMs: number }>,
+  opts: { system: string; user: string; maxTokens: number; temperature?: number },
+): Promise<{ text: string; finishReason: string | null; model: string }> {
+  let lastErr: unknown;
+  for (const a of attempts) {
+    try {
+      const r = await callOnce({ model: a.model, timeoutMs: a.timeoutMs, ...opts });
+      return { ...r, model: a.model };
+    } catch (err) {
+      if (err instanceof ProviderError && err.status === 429) {
+        throw new RateLimitError(err.retryAfter ?? 15);
+      }
+      if (isModelUnavailable(err) || isTimeout(err)) {
+        lastErr = err;
+        console.warn(`[llm] draft model ${a.model} unavailable/slow, trying next:`, (err as Error).message);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error("All draft models are unavailable.");
 }
 
 /**
@@ -361,12 +394,19 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   let finishReason: string | null;
   let model: string;
   try {
-    ({ text, finishReason, model } = await chat({
-      system: SYSTEM_PROMPT,
-      user: chunkUserPrompt({ ...opts, isFirst }),
-      maxTokens: 4000, // smaller = the call returns fast enough to fit the 60s limit
-      timeoutMs: 26000, // so a slow model can be abandoned and a second one still fits
-    }));
+    // The draft prefers the strong DRAFT_MODEL (better speaker attribution) with a
+    // bounded window, then falls back to the fast MODEL — all inside the 60s budget.
+    ({ text, finishReason, model } = await chatPreferred(
+      [
+        { model: DRAFT_MODEL, timeoutMs: 30000 },
+        { model: MODEL, timeoutMs: 15000 },
+      ],
+      {
+        system: SYSTEM_PROMPT,
+        user: chunkUserPrompt({ ...opts, isFirst }),
+        maxTokens: 4000,
+      },
+    ));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error(
@@ -402,7 +442,8 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
 
 /** Generate the note section(s) for one transcript chunk — draft, then a copy-edit second pass. */
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
-  const { parsed } = await runChunk(opts);
+  const draft = await runChunk(opts);
+  const parsed = draft.parsed;
   const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
 
   // Consistency guarantees (in code, so every page matches regardless of the model):
@@ -410,8 +451,12 @@ export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk>
   if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
   backfillSectionTimestamps(parsed.sections);
 
-  // Text-only copy-edit — cleans wording without touching timestamps/speakers/structure.
-  await refineTexts(parsed.sections, opts.videoTitle, speakers);
+  // Copy-edit only when the strong DRAFT_MODEL did NOT serve (it fell back to Flash,
+  // which needs cleanup). When Pro served, its output is strong and we keep the time
+  // budget for it. Deterministic cleanup already ran either way.
+  if (draft.model !== DRAFT_MODEL) {
+    await refineTexts(parsed.sections, opts.videoTitle, speakers);
+  }
 
   return parsed;
 }
@@ -466,7 +511,8 @@ export async function generationSelfTest(): Promise<{
  * runs and fits the serverless budget (or is silently timing out).
  */
 export async function generationSelfTestFull(): Promise<{
-  model: string;
+  draftModel: string;
+  usingPro: boolean;
   sectionsReturned: number;
   draftMs: number;
   refineMs: number;
@@ -497,7 +543,8 @@ export async function generationSelfTestFull(): Promise<{
   const refineMs = Date.now() - t1;
 
   return {
-    model: res.model,
+    draftModel: res.model,
+    usingPro: res.model === DRAFT_MODEL,
     sectionsReturned: res.parsed.sections.length,
     draftMs,
     refineMs,
@@ -630,7 +677,7 @@ async function refineTexts(sections: Section[], title: string, speakers: string[
       system: REFINE_SYSTEM_PROMPT,
       user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(map) }),
       maxTokens: 4000,
-      timeoutMs: 22000,
+      timeoutMs: 12000, // fast: it runs after the draft, and both must fit 60s
       temperature: 0.2,
     });
     const cleaned = parseJsonObject<Record<string, unknown>>(text);
