@@ -95,11 +95,12 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
       lastErr,
     );
 
-    if (attempts >= MAX_CHUNK_ATTEMPTS) {
-      // This chunk is genuinely stuck (e.g. content the model won't process).
-      // Rather than freeze the note forever, skip it and move on — the note
-      // still completes; at worst one stretch of the video is thinner. The user
-      // is never left waiting endlessly.
+    // Only skip a chunk if the note ALREADY has real content — i.e. this is one
+    // cursed chunk in an otherwise-working note. If nothing has been written yet
+    // (nextOrderBase === 0), the failure is almost certainly provider-wide (model
+    // down / rate limited); skipping would just march an empty note to "ready".
+    // Instead, keep it `processing` and keep retrying so it recovers on its own.
+    if (attempts >= MAX_CHUNK_ATTEMPTS && nextOrderBase > 0) {
       const nextCursor = cursor + 1;
       const done = nextCursor >= chunks.length;
       await supabase
@@ -115,10 +116,12 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
       return NextResponse.json({ skipped: true, done, cursor: nextCursor, total: chunks.length });
     }
 
-    // Not yet at the cap — record the attempt and let the driver retry this chunk.
+    // Record the attempt and let the driver retry this chunk. Cap the stored
+    // count (a zero-section note during an outage retries indefinitely, so the
+    // number must not grow without bound).
     await supabase
       .from("notes")
-      .update({ error_message: `stall:${cursor}:${attempts}` })
+      .update({ error_message: `stall:${cursor}:${Math.min(attempts, MAX_CHUNK_ATTEMPTS)}` })
       .eq("id", id);
     return NextResponse.json({ retry: true }, { status: 503 });
   }

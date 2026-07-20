@@ -156,6 +156,15 @@ export function BackgroundGenerator() {
         const { ids } = (await res.json()) as { ids: string[] };
         for (const id of ids ?? []) {
           if (stopped || !isLeader()) break;
+          // If a reader is open on this note, it drives it — don't double up and
+          // burn the rate limit on the same note.
+          let readerNote: string | null = null;
+          try {
+            readerNote = localStorage.getItem("verbatim:reader-note");
+          } catch {
+            /* ignore */
+          }
+          if (id === readerNote) continue;
           await drive(id);
         }
       } catch {

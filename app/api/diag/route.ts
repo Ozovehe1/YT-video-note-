@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { llmSelfTest, llmRawProbes, generateChunkDebug, MODELS } from "@/lib/llm";
+import {
+  llmSelfTest,
+  llmRawProbes,
+  generateChunkDebug,
+  generationSelfTest,
+  MODELS,
+} from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -61,6 +67,19 @@ export async function GET(request: Request) {
     }
   }
 
+  // Run the REAL note-writing path on a built-in sample so we can confirm the
+  // model actually produces sections (the thing that keeps failing) without
+  // needing a live note. `sectionsReturned >= 1` = the pipeline is healthy.
+  let generation: Record<string, unknown>;
+  try {
+    generation = { ok: true, ...(await generationSelfTest()) };
+  } catch (err) {
+    generation = {
+      ok: false,
+      error: String(err instanceof Error ? err.message : err).slice(0, 800),
+    };
+  }
+
   // Optional: exercise the REAL chunk generation for a specific note.
   const noteId = new URL(request.url).searchParams.get("noteId");
   let chunk: Record<string, unknown> | undefined;
@@ -72,6 +91,7 @@ export async function GET(request: Request) {
     commit,
     env,
     model,
+    generation,
     ...(probes ? { probes } : {}),
     ...(chunk ? { chunk } : {}),
   });

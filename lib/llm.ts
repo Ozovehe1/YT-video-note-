@@ -381,6 +381,45 @@ export async function generateChunkDebug(opts: GenerateOpts): Promise<ChunkResul
   return runChunk(opts);
 }
 
+/**
+ * Run the REAL note-writing path on a tiny built-in transcript, so /api/diag can
+ * confirm the model actually produces sections (not just that a trivial call
+ * works). Independent of any saved note.
+ */
+export async function generationSelfTest(): Promise<{
+  model: string;
+  sectionsReturned: number;
+  finishReason: string | null;
+  rawTextPreview: string;
+  elapsedMs: number;
+}> {
+  const sample = [
+    "[00:00] Today I want to explain one simple idea about habits.",
+    "[00:08] A habit is just a behavior repeated enough that it becomes automatic.",
+    "[00:15] The key is to make the good ones easy and the bad ones hard.",
+    "[00:23] Start absurdly small — two minutes — and let it grow from there.",
+  ].join("\n");
+
+  const started = Date.now();
+  const res = await generateChunkDebug({
+    chunkIndex: 0,
+    chunkTotal: 1,
+    videoTitle: "Diagnostic sample",
+    channel: "",
+    videoType: "monologue",
+    speakers: [],
+    previousHeading: null,
+    chunkText: sample,
+  });
+  return {
+    model: res.model,
+    sectionsReturned: res.parsed.sections.length,
+    finishReason: res.finishReason,
+    rawTextPreview: res.rawTextPreview,
+    elapsedMs: Date.now() - started,
+  };
+}
+
 function sanitizeBlock(b: NoteBlock): NoteBlock {
   const out: NoteBlock = {
     type: b.type,
