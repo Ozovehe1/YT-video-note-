@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { geminiSelfTest, generateChunkDebug } from "@/lib/gemini";
+import { llmSelfTest, generateChunkDebug } from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -9,7 +9,7 @@ export const maxDuration = 60;
 /**
  * Diagnostic endpoint. Open it in a browser while signed in.
  *
- *   /api/diag                → env presence + deployed commit + a tiny Gemini call
+ *   /api/diag                → env presence + deployed commit + a tiny model call
  *   /api/diag?noteId=<id>    → all of the above, PLUS actually run the note's next
  *                              chunk through generateChunk and report what came back
  *                              (finishReason, elapsed ms, sections, raw error). This is
@@ -32,18 +32,19 @@ export async function GET(request: Request) {
     "unknown";
 
   const env = {
-    GEMINI_API_KEY: Boolean(process.env.GEMINI_API_KEY),
-    GEMINI_MODEL: process.env.GEMINI_MODEL || "(default) gemini-2.5-flash",
+    NVIDIA_API_KEY: Boolean(process.env.NVIDIA_API_KEY),
+    LLM_MODEL: process.env.LLM_MODEL || "(default) deepseek-ai/deepseek-v4-pro",
+    LLM_BASE_URL: process.env.LLM_BASE_URL || "(default) https://integrate.api.nvidia.com/v1",
     SUPADATA_API_KEY: Boolean(process.env.SUPADATA_API_KEY),
     YOUTUBE_API_KEY: Boolean(process.env.YOUTUBE_API_KEY),
     NEXT_PUBLIC_SUPABASE_URL: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
   };
 
-  let gemini: Record<string, unknown>;
+  let model: Record<string, unknown>;
   try {
-    gemini = { ok: true, ...(await geminiSelfTest()) };
+    model = { ok: true, ...(await llmSelfTest()) };
   } catch (err) {
-    gemini = {
+    model = {
       ok: false,
       error: String(err instanceof Error ? err.message : err).slice(0, 800),
     };
@@ -56,7 +57,7 @@ export async function GET(request: Request) {
     chunk = await diagnoseChunk(supabase, noteId);
   }
 
-  return NextResponse.json({ commit, env, gemini, ...(chunk ? { chunk } : {}) });
+  return NextResponse.json({ commit, env, model, ...(chunk ? { chunk } : {}) });
 }
 
 async function diagnoseChunk(

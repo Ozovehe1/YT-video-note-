@@ -1,12 +1,12 @@
 /**
  * Split a timestamped transcript into ordered, time-contiguous chunks so each
  * one can be turned into note sections within a single short serverless request.
- * Chunking by line count (with a rough char ceiling) keeps every Gemini call
+ * Chunking by line count (with a rough char ceiling) keeps every model call
  * bounded and lets page count scale with video length.
  */
-// Larger chunks = fewer Gemini calls, which matters on the free tier (5 req/min).
-// Gemini 2.5 handles big context easily, so each request still completes well
-// within the serverless limit while roughly halving the number of requests.
+// Smaller chunks = each note reliably fits the model's output budget and each
+// call finishes well within the serverless limit; the paced driver keeps the
+// request rate under the provider's per-minute cap.
 // Sized so one chunk's note comfortably fits the model's output budget (8192
 // tokens). Too large a chunk risks a truncated reply, which would fail the
 // chunk; these bounds keep every reply complete while still limiting the number

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { generateChunk, RateLimitError } from "@/lib/gemini";
+import { generateChunk, RateLimitError } from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -57,7 +57,7 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
 
   const nextOrderBase = lastSection ? lastSection.order_index + 1 : 0;
 
-  // Try the chunk, retrying transient failures (bad JSON, empty output, a Gemini
+  // Try the chunk, retrying transient failures (bad JSON, empty output, a model
   // 5xx) once before giving up — so a single flaky response doesn't kill the note.
   // Rate limits are NOT retried here; they're returned to the client to pace.
   let generated: Awaited<ReturnType<typeof generateChunk>> | undefined;

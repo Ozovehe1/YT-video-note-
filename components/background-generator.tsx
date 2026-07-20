@@ -11,17 +11,18 @@ import { useRouter } from "next/navigation";
  * user closes the tab, generation pauses; opening the app again resumes it
  * from wherever it left off (the server tracks the chunk cursor).
  *
- * CROSS-TAB SINGLE DRIVER: the free Gemini tier caps requests per minute. If a
+ * CROSS-TAB SINGLE DRIVER: the model provider caps requests per minute. If a
  * driver ran in every open tab, N tabs would multiply the request rate and trip
  * that cap — which then stalls every note (a 429 never advances a note, so the
  * tabs keep hammering). To prevent that, tabs elect ONE leader via localStorage;
  * only the leader makes requests. If the leader tab closes, another takes over.
  *
- * Pacing respects NEXT_PUBLIC_GEMINI_RPM (default 5/min), well under the tier
+ * Pacing respects NEXT_PUBLIC_LLM_RPM (default 10/min), well under the provider
  * cap, and 429s back off. After each chunk it calls router.refresh() so whatever
  * page is open (the reader, the library) updates.
  */
-const RPM = Number(process.env.NEXT_PUBLIC_GEMINI_RPM) || 10;
+const RPM =
+  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 10;
 const MIN_INTERVAL_MS = Math.ceil(60000 / RPM) + 1000;
 const POLL_MS = 20000;
 const LEADER_KEY = "verbatim:gen-leader";

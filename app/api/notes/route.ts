@@ -5,7 +5,7 @@ import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
 import { fetchTranscript, TranscriptError } from "@/lib/supadata";
 import { chunkTranscript } from "@/lib/chunk";
-import { classifyVideo } from "@/lib/gemini";
+import { classifyVideo } from "@/lib/llm";
 
 export const maxDuration = 60;
 

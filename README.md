@@ -8,7 +8,7 @@ timestamped transcript, detects whether it's a **monologue** or a **dialogue**, 
 complete note that mirrors the video's own structure — in order, nothing summarized away. Longer
 video → longer read.
 
-Built with **Next.js** (App Router) + **Google Gemini** + **Supabase**, deployable free on **Vercel**.
+Built with **Next.js** (App Router) + **DeepSeek v4 Pro** (via NVIDIA) + **Supabase**, deployable free on **Vercel**.
 
 ---
 
@@ -31,7 +31,8 @@ Built with **Next.js** (App Router) + **Google Gemini** + **Supabase**, deployab
 Next.js on Vercel
   ├─ YouTube Data API   → search by title + video metadata      (lib/youtube.ts)
   ├─ Supadata           → timestamped transcript (works on Vercel IPs)  (lib/supadata.ts)
-  ├─ Google Gemini      → chunked note generation → structured blocks   (lib/gemini.ts)
+  ├─ DeepSeek v4 Pro    → chunked note generation → structured blocks   (lib/llm.ts)
+  │    (via NVIDIA's OpenAI-compatible API)
   └─ Supabase           → Postgres (notes, sections, progress) + Auth, all RLS-protected
 ```
 
@@ -49,7 +50,7 @@ progress.
 
 | Service | Used for | Get a key |
 |---|---|---|
-| **Google Gemini** | Writing the notes | <https://aistudio.google.com/> |
+| **NVIDIA (DeepSeek v4 Pro)** | Writing the notes | <https://build.nvidia.com/> |
 | **Supabase** | Accounts + data | <https://supabase.com/> (create a project) |
 | **Supadata** | Transcripts | <https://supadata.ai/> |
 | **YouTube Data API v3** | Title search | Google Cloud Console → enable *YouTube Data API v3* → API key |
@@ -70,8 +71,9 @@ cp .env.example .env.local   # then fill in your keys
 ```
 
 ```
-GEMINI_API_KEY=AQ...
-GEMINI_MODEL=gemini-2.5-flash
+NVIDIA_API_KEY=nvapi-...
+LLM_MODEL=deepseek-ai/deepseek-v4-pro
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...
 SUPADATA_API_KEY=sd_...
@@ -112,7 +114,7 @@ app/
     notes/[id]/generate-next/  generate one chunk → sections
     notes/[id]/export/         PDF | DOCX | EPUB | Markdown, on demand
 lib/
-  youtube, supadata, chunk, prompts, gemini
+  youtube, supadata, chunk, prompts, llm
   supabase/{client,server,middleware}
   export/{markdown,docx,epub,pdf}
 components/                     nav, hero search, reader, note cards, settings…

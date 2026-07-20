@@ -1,4 +1,5 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import {
   SYSTEM_PROMPT,
   chunkUserPrompt,
@@ -7,60 +8,100 @@ import {
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
-// Note generation runs on flash-lite: a separate free-tier quota bucket and a
-// higher per-minute limit than flash, so notes keep generating reliably. Set the
-// GEMINI_MODEL env var to override (e.g. "gemini-2.5-flash" for higher quality).
-export const MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+// ---------------------------------------------------------------------------
+// LLM backend: DeepSeek v4 Pro via NVIDIA's OpenAI-compatible API.
+// Everything is overridable by env var so the model/endpoint can change without
+// touching code.
+// ---------------------------------------------------------------------------
+const BASE_URL = process.env.LLM_BASE_URL || "https://integrate.api.nvidia.com/v1";
+export const MODEL = process.env.LLM_MODEL || "deepseek-ai/deepseek-v4-pro";
+// Classification is a small task; reuse the same model by default.
+export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
 
-// Classification is a small, easy task, so run it on flash-lite. flash-lite has
-// its own separate free-tier quota bucket and a higher per-minute limit, so this
-// keeps classification from ever competing with note generation for the same quota.
-export const CLASSIFY_MODEL =
-  process.env.GEMINI_CLASSIFY_MODEL || "gemini-2.5-flash-lite";
-
-/** Thrown when Gemini returns 429 RESOURCE_EXHAUSTED, carrying its suggested wait. */
+/** Thrown when the provider returns 429, carrying its suggested wait. */
 export class RateLimitError extends Error {
   retryAfterSec: number;
   constructor(retryAfterSec: number) {
-    super("Gemini free-tier rate limit reached.");
+    super("Model provider rate limit reached.");
     this.name = "RateLimitError";
     this.retryAfterSec = retryAfterSec;
   }
 }
 
-/** Thrown when the model returns no usable text (e.g. finishReason MAX_TOKENS with empty output). */
+/** Thrown when the model returns no usable text (e.g. finish_reason "length" with empty output). */
 export class EmptyOutputError extends Error {
   finishReason: string | null;
   constructor(finishReason: string | null) {
-    super(`Gemini returned no usable content (finishReason: ${finishReason ?? "unknown"}).`);
+    super(`Model returned no usable content (finish_reason: ${finishReason ?? "unknown"}).`);
     this.name = "EmptyOutputError";
     this.finishReason = finishReason;
   }
 }
 
 function isRateLimit(err: unknown): boolean {
-  const e = err as { status?: unknown; code?: unknown; message?: unknown };
-  const s = String(e?.message ?? err ?? "");
-  return (
-    e?.status === 429 ||
-    e?.code === 429 ||
-    /RESOURCE_EXHAUSTED|"code"\s*:\s*429|\b429\b/.test(s)
-  );
+  const e = err as { status?: unknown; code?: unknown };
+  return e?.status === 429 || e?.code === 429;
 }
 
 function parseRetrySec(err: unknown): number {
-  const s = String((err as { message?: unknown })?.message ?? err ?? "");
-  const m = s.match(/retryDelay"?\s*:?\s*"?(\d+)s/i);
-  // Fall back to a value safely above a 5-rpm (12s) window.
-  return m ? Number(m[1]) + 1 : 15;
+  const e = err as { headers?: Record<string, string> };
+  const ra = e?.headers?.["retry-after"];
+  const n = ra ? Number(ra) : NaN;
+  // Fall back to a safe window when no Retry-After header is present.
+  return Number.isFinite(n) ? n + 1 : 15;
+}
+
+let client: OpenAI | null = null;
+
+function llm(): OpenAI {
+  if (!process.env.NVIDIA_API_KEY) {
+    throw new Error("NVIDIA_API_KEY is not set.");
+  }
+  client ??= new OpenAI({
+    apiKey: process.env.NVIDIA_API_KEY,
+    baseURL: BASE_URL,
+    // We do our own paced retries at the app level, and each serverless call has
+    // a ~60s ceiling — so don't let the SDK add its own retries/long timeout.
+    maxRetries: 0,
+    timeout: 55000,
+  });
+  return client;
 }
 
 /**
- * Parse the model's JSON reply defensively. With responseMimeType
- * "application/json" Gemini returns raw JSON, but we still tolerate a stray code
- * fence or leading prose by extracting the outermost {...} before parsing — so a
- * minor formatting slip never fails a chunk.
+ * One chat completion. `chat_template_kwargs.thinking:false` disables DeepSeek's
+ * chain-of-thought so the whole budget goes to the answer (and the reply is
+ * plain JSON, not reasoning). Returns the text plus finish_reason.
+ */
+async function chat(opts: {
+  model: string;
+  system: string;
+  user: string;
+  maxTokens: number;
+}): Promise<{ text: string; finishReason: string | null }> {
+  const body = {
+    model: opts.model,
+    messages: [
+      { role: "system", content: opts.system },
+      { role: "user", content: opts.user },
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: opts.maxTokens,
+    stream: false,
+    // NVIDIA/vLLM extra: turn off DeepSeek "thinking" so output is the answer only.
+    chat_template_kwargs: { thinking: false },
+  } as unknown as ChatCompletionCreateParamsNonStreaming;
+
+  const completion = await llm().chat.completions.create(body);
+  const choice = completion.choices?.[0];
+  return { text: choice?.message?.content ?? "", finishReason: choice?.finish_reason ?? null };
+}
+
+/**
+ * Parse the model's JSON reply defensively. We ask for raw JSON, but still
+ * tolerate a stray code fence or leading prose by extracting the outermost
+ * {...} before parsing — so a minor formatting slip never fails a chunk.
  */
 function parseJsonObject<T>(text: string): T {
   const trimmed = text.trim();
@@ -76,45 +117,24 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
-let client: GoogleGenAI | null = null;
-
-function gemini(): GoogleGenAI {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not set.");
-  }
-
-  client ??= new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-  });
-
-  return client;
-}
-
-/**
- * One minimal round-trip to Gemini, used by /api/diag to surface the *real*
- * runtime status: whether the key works, which model answers, and the finish
- * reason (e.g. MAX_TOKENS with empty text = thinking/output-budget trouble).
- * Errors are intentionally NOT caught here so the caller can report them raw.
- */
-export async function geminiSelfTest(): Promise<{
+/** One minimal round-trip, used by /api/diag to surface the real runtime status. */
+export async function llmSelfTest(): Promise<{
   model: string;
   text: string | null;
   finishReason: string | null;
 }> {
-  const res = await gemini().models.generateContent({
-    model: MODEL,
-    contents: 'Reply with exactly this JSON and nothing else: {"ok":true}',
-    config: {
-      responseMimeType: "application/json",
-      maxOutputTokens: 100,
-      thinkingConfig: { thinkingBudget: 0 },
-    },
-  });
-  return {
-    model: MODEL,
-    text: res.text ?? null,
-    finishReason: res.candidates?.[0]?.finishReason ?? null,
-  };
+  try {
+    const { text, finishReason } = await chat({
+      model: MODEL,
+      system: "You output only JSON.",
+      user: 'Reply with exactly this JSON and nothing else: {"ok":true}',
+      maxTokens: 100,
+    });
+    return { model: MODEL, text: text || null, finishReason };
+  } catch (err) {
+    if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    throw err;
+  }
 }
 
 /**
@@ -140,28 +160,20 @@ export async function classifyVideo(opts: {
   transcript: string;
 }): Promise<{ video_type: VideoType; speakers: string[] }> {
   const sample = sampleTranscript(opts.transcript);
-  let response;
+  let text: string;
   try {
-    response = await gemini().models.generateContent({
+    ({ text } = await chat({
       model: CLASSIFY_MODEL,
-      contents: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
-      config: {
-        systemInstruction: CLASSIFY_SYSTEM_PROMPT,
-        responseMimeType: "application/json",
-        maxOutputTokens: 2048,
-        // gemini-2.5-flash "thinks" by default, which can silently consume the
-        // whole output budget and return empty text. This is a small, well-scoped
-        // task — no thinking needed. Disabling it guarantees a non-empty reply.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
+      system: CLASSIFY_SYSTEM_PROMPT,
+      user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
+      maxTokens: 2048,
+    }));
   } catch (err) {
     if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
-    console.error("[classifyVideo] Gemini call failed:", err);
+    console.error("[classifyVideo] LLM call failed:", err);
     throw err;
   }
 
-  const text = response.text;
   if (!text) throw new Error("No classification returned.");
   const parsed = parseJsonObject<{ video_type: VideoType; speakers?: string[] }>(text);
   return {
@@ -192,44 +204,34 @@ export interface ChunkResult {
 }
 
 /**
- * Core chunk call. Returns the parsed note plus the raw metadata (finishReason,
+ * Core chunk call. Returns the parsed note plus raw metadata (finish_reason,
  * text length/preview) so the diagnostic endpoint can see exactly what came back.
  * Throws RateLimitError on 429 and EmptyOutputError when the reply has no usable text.
  */
 async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   const isFirst = opts.chunkIndex === 0;
 
-  let response;
+  let text: string;
+  let finishReason: string | null;
   try {
-    response = await gemini().models.generateContent({
+    ({ text, finishReason } = await chat({
       model: MODEL,
-      contents: chunkUserPrompt({ ...opts, isFirst }),
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        responseMimeType: "application/json",
-        // Give the note plenty of room. gemini-2.5-flash "thinks" by default; on a
-        // big chunk that thinking can consume the output budget and return empty
-        // text — the "writes nothing" bug. Disable thinking and raise the ceiling
-        // (the model supports up to 65536 output tokens) so a full note always fits.
-        maxOutputTokens: 32768,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
+      system: SYSTEM_PROMPT,
+      user: chunkUserPrompt({ ...opts, isFirst }),
+      maxTokens: 16384,
+    }));
   } catch (err) {
     if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
     console.error(
-      `[generateChunk] Gemini call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
+      `[generateChunk] LLM call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
       err,
     );
     throw err;
   }
 
-  const finishReason = response.candidates?.[0]?.finishReason ?? null;
-  const text = response.text;
-
   if (!text) {
     console.error(
-      `[generateChunk] empty reply (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}, finishReason ${finishReason}).`,
+      `[generateChunk] empty reply (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}, finish_reason ${finishReason}).`,
     );
     throw new EmptyOutputError(finishReason);
   }
