@@ -11,8 +11,10 @@
 // tokens). Too large a chunk risks a truncated reply, which would fail the
 // chunk; these bounds keep every reply complete while still limiting the number
 // of requests (which matters on the 5 req/min free tier).
-const TARGET_LINES = 60; // ~ 3 minutes of speech per chunk
-const MAX_CHARS = 4500; // small enough that each note-writing call finishes well inside 60s
+// Small chunks: each page runs TWO fast model calls (draft + attribution repair),
+// and both must finish inside the 60s serverless limit.
+const TARGET_LINES = 40; // ~ 2 minutes of speech per chunk
+const MAX_CHARS = 2500;
 
 export function chunkTranscript(transcript: string): string[] {
   const lines = transcript.split("\n").filter((l) => l.trim().length > 0);

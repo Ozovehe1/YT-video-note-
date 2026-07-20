@@ -429,7 +429,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
           system: SYSTEM_PROMPT,
           user: chunkUserPrompt({ ...opts, isFirst }),
           maxTokens: 4000,
-          timeoutMs: 26000,
+          timeoutMs: 22000, // draft + repair must both fit the 60s serverless limit
         }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
@@ -539,7 +539,7 @@ export async function generationSelfTest(): Promise<{
  */
 export async function generationSelfTestFull(): Promise<{
   draftModel: string;
-  usingPro: boolean;
+  draftIsStrong: boolean;
   sectionsReturned: number;
   draftMs: number;
   refineMs: number;
@@ -572,7 +572,7 @@ export async function generationSelfTestFull(): Promise<{
 
   return {
     draftModel: res.model,
-    usingPro: res.model === DRAFT_MODEL,
+    draftIsStrong: res.model !== MODEL,
     sectionsReturned: res.parsed.sections.length,
     draftMs,
     refineMs,
@@ -745,7 +745,7 @@ async function repairAttribution(sections: Section[], title: string, speakers: s
       system: ATTRIBUTION_SYSTEM_PROMPT,
       user: attributionUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(input) }),
       maxTokens: 4000,
-      timeoutMs: 14000,
+      timeoutMs: 12000,
       temperature: 0.2,
     });
     out = parseJsonArray(text);
