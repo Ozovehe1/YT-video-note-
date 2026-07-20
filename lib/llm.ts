@@ -117,14 +117,32 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
+// Candidate models to health-check when the primary is down. The current MODEL
+// is always tested first; the rest are common, usually-healthy NVIDIA models to
+// fall back to. Override the probe list with LLM_PROBE_MODELS (comma-separated).
+const PROBE_MODELS = (
+  process.env.LLM_PROBE_MODELS ||
+  [
+    MODEL,
+    "deepseek-ai/deepseek-v4-flash",
+    "deepseek-ai/deepseek-r1",
+    "meta/llama-3.3-70b-instruct",
+    "meta/llama-3.1-8b-instruct",
+    "qwen/qwen2.5-7b-instruct",
+  ].join(",")
+)
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
+
 /**
- * Send progressively richer requests straight to the provider (bypassing the SDK,
- * which hides the error body behind "400 no body") and report each one's raw
- * status + response text. This pinpoints exactly which parameter the provider
- * rejects — the base call, the thinking kwarg, or the full param set.
+ * Health-check each candidate model with one minimal request straight to the
+ * provider (bypassing the SDK, which hides the error body). Reveals which models
+ * are actually up (`ok:true`) vs DEGRADED/unavailable — so we can point MODEL at
+ * a healthy one instead of guessing.
  */
 export async function llmRawProbes(): Promise<
-  Array<{ label: string; status?: number; body?: string; error?: string }>
+  Array<{ model: string; status?: number; ok?: boolean; detail?: string; error?: string }>
 > {
   const headers = {
     "Content-Type": "application/json",
@@ -132,39 +150,24 @@ export async function llmRawProbes(): Promise<
   };
   const user = [{ role: "user", content: 'Reply with exactly {"ok":true}' }];
 
-  async function probe(label: string, body: unknown) {
+  async function probe(model: string) {
     try {
       const res = await fetch(`${BASE_URL}/chat/completions`, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify({ model, messages: user, max_tokens: 64, stream: false }),
       });
       const text = await res.text();
-      return { label, status: res.status, body: text.slice(0, 500) };
+      return { model, status: res.status, ok: res.ok, detail: text.slice(0, 300) };
     } catch (e) {
-      return { label, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+      return { model, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
     }
   }
 
-  return [
-    await probe("minimal", { model: MODEL, messages: user, max_tokens: 100, stream: false }),
-    await probe("thinking_off", {
-      model: MODEL,
-      messages: user,
-      max_tokens: 100,
-      stream: false,
-      chat_template_kwargs: { thinking: false },
-    }),
-    await probe("full", {
-      model: MODEL,
-      messages: [{ role: "system", content: "You output only JSON." }, ...user],
-      temperature: 1,
-      top_p: 0.95,
-      max_tokens: 100,
-      stream: false,
-      chat_template_kwargs: { thinking: false },
-    }),
-  ];
+  // Sequential to stay well under the per-minute rate limit.
+  const out = [];
+  for (const m of PROBE_MODELS) out.push(await probe(m));
+  return out;
 }
 
 /** One minimal round-trip, used by /api/diag to surface the real runtime status. */
