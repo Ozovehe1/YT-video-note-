@@ -5,6 +5,8 @@ import {
   classifyUserPrompt,
   REFINE_SYSTEM_PROMPT,
   refineUserPrompt,
+  ATTRIBUTION_SYSTEM_PROMPT,
+  attributionUserPrompt,
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
@@ -38,9 +40,10 @@ export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
 // Kept for backward-compat / diagnostics; classification uses the same fallback list.
 export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
 
-// The note DRAFT (where speaker attribution happens) prefers a stronger model;
-// it falls back to the fast MODEL if the strong one is slow/unavailable.
-export const DRAFT_MODEL = process.env.LLM_DRAFT_MODEL || "deepseek-ai/deepseek-v4-pro";
+// The note DRAFT model. Defaults to the fast MODEL (Flash) — the stronger models
+// are too slow for the 60s serverless limit. Can be opted into via LLM_DRAFT_MODEL.
+export const DRAFT_MODEL = process.env.LLM_DRAFT_MODEL || MODEL;
+const DRAFT_USES_STRONG = DRAFT_MODEL !== MODEL;
 
 /** Thrown when the provider returns 429, carrying its suggested wait. */
 export class RateLimitError extends Error {
@@ -251,6 +254,24 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
+/** Parse a JSON array reply defensively (tolerates fences/prose around it). */
+function parseJsonArray<T>(text: string): T[] {
+  const trimmed = text.trim();
+  try {
+    const v = JSON.parse(trimmed);
+    if (Array.isArray(v)) return v as T[];
+  } catch {
+    /* fall through */
+  }
+  const start = trimmed.indexOf("[");
+  const end = trimmed.lastIndexOf("]");
+  if (start !== -1 && end > start) {
+    const v = JSON.parse(trimmed.slice(start, end + 1));
+    if (Array.isArray(v)) return v as T[];
+  }
+  throw new Error("Model reply was not a JSON array.");
+}
+
 // Candidate models the diagnostic health-checks. Includes the fallback list plus a
 // couple extras. Override with LLM_PROBE_MODELS (comma-separated).
 const PROBE_MODELS = (
@@ -394,19 +415,22 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   let finishReason: string | null;
   let model: string;
   try {
-    // The draft prefers the strong DRAFT_MODEL (better speaker attribution) with a
-    // bounded window, then falls back to the fast MODEL — all inside the 60s budget.
-    ({ text, finishReason, model } = await chatPreferred(
-      [
-        { model: DRAFT_MODEL, timeoutMs: 30000 },
-        { model: MODEL, timeoutMs: 15000 },
-      ],
-      {
-        system: SYSTEM_PROMPT,
-        user: chunkUserPrompt({ ...opts, isFirst }),
-        maxTokens: 4000,
-      },
-    ));
+    ({ text, finishReason, model } = DRAFT_USES_STRONG
+      ? // Opt-in strong draft model: bounded window, then fall back to fast MODEL.
+        await chatPreferred(
+          [
+            { model: DRAFT_MODEL, timeoutMs: 30000 },
+            { model: MODEL, timeoutMs: 15000 },
+          ],
+          { system: SYSTEM_PROMPT, user: chunkUserPrompt({ ...opts, isFirst }), maxTokens: 4000 },
+        )
+      : // Default: fast model with the normal fallback chain.
+        await chat({
+          system: SYSTEM_PROMPT,
+          user: chunkUserPrompt({ ...opts, isFirst }),
+          maxTokens: 4000,
+          timeoutMs: 26000,
+        }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error(
@@ -440,23 +464,26 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   };
 }
 
-/** Generate the note section(s) for one transcript chunk — draft, then a copy-edit second pass. */
+/** Generate the note section(s) for one transcript chunk — draft, then a focused second pass. */
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
   const draft = await runChunk(opts);
   const parsed = draft.parsed;
   const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
 
-  // Consistency guarantees (in code, so every page matches regardless of the model):
   const isDialogue = opts.videoType === "dialogue" || parsed.video_type === "dialogue";
-  if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
-  backfillSectionTimestamps(parsed.sections);
 
-  // Copy-edit only when the strong DRAFT_MODEL did NOT serve (it fell back to Flash,
-  // which needs cleanup). When Pro served, its output is strong and we keep the time
-  // budget for it. Deterministic cleanup already ran either way.
-  if (draft.model !== DRAFT_MODEL) {
+  if (isDialogue) {
+    // Dedicated pass: split blocks that merged two speakers and fix labels. Guarded —
+    // it keeps the draft on any failure, so it can never scramble the note.
+    await repairAttribution(parsed.sections, opts.videoTitle, speakers);
+  } else {
+    // Monologue: no attribution to fix — just a light text cleanup pass.
     await refineTexts(parsed.sections, opts.videoTitle, speakers);
   }
+
+  // Consistency guarantees, always applied last (after any splitting/relabeling):
+  if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
+  backfillSectionTimestamps(parsed.sections);
 
   return parsed;
 }
@@ -539,7 +566,8 @@ export async function generationSelfTestFull(): Promise<{
   const draftMs = Date.now() - t0;
 
   const t1 = Date.now();
-  const refineRan = await refineTexts(res.parsed.sections, "Diagnostic sample", ["Host", "Guest"]);
+  // Exercise the real dialogue second pass (attribution repair).
+  const refineRan = await repairAttribution(res.parsed.sections, "Diagnostic sample", ["Host", "Guest"]);
   const refineMs = Date.now() - t1;
 
   return {
@@ -693,4 +721,76 @@ async function refineTexts(sections: Section[], title: string, speakers: string[
   } catch {
     return false; // keep the draft text — never let cleanup block a note
   }
+}
+
+/**
+ * Dialogue-only second pass focused on ATTRIBUTION: split any block that merged two
+ * speakers' words and fix wrong labels (plus light text cleanup). Rebuilds sections
+ * in place. Best-effort with guards: keeps the draft on any failure/timeout or if the
+ * returned text drops too much content (so it can never scramble or shrink a note).
+ * Returns true if it applied a repaired result.
+ */
+async function repairAttribution(sections: Section[], title: string, speakers: string[]): Promise<boolean> {
+  // Flatten blocks with their section index, in reading order.
+  const flat: { sIdx: number; block: NoteBlock }[] = [];
+  sections.forEach((s, sIdx) => s.content.forEach((block) => flat.push({ sIdx, block })));
+  if (flat.length < 2) return false;
+
+  const input = flat.map((f, i) => ({ i, speaker: f.block.speaker ?? "", text: f.block.text }));
+  const draftTotal = input.reduce((n, b) => n + b.text.length, 0);
+
+  let out: Array<{ ref?: unknown; speaker?: unknown; text?: unknown }>;
+  try {
+    const { text } = await chat({
+      system: ATTRIBUTION_SYSTEM_PROMPT,
+      user: attributionUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(input) }),
+      maxTokens: 4000,
+      timeoutMs: 14000,
+      temperature: 0.2,
+    });
+    out = parseJsonArray(text);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(out) || !out.length) return false;
+
+  // Content-loss guard: never accept a result that dropped a big chunk of the words.
+  const outTotal = out.reduce((n, e) => n + (typeof e.text === "string" ? e.text.length : 0), 0);
+  if (outTotal < draftTotal * 0.7) return false;
+
+  // Group returned entries by their original block index (ref); a split yields several.
+  const byRef = new Map<number, Array<{ speaker?: string; text: string }>>();
+  for (const e of out) {
+    const ref = Number(e.ref);
+    if (!Number.isInteger(ref) || ref < 0 || ref >= flat.length) continue;
+    const t = typeof e.text === "string" ? e.text.trim() : "";
+    if (!t) continue;
+    const arr = byRef.get(ref) ?? [];
+    arr.push({ speaker: typeof e.speaker === "string" ? e.speaker : undefined, text: t });
+    byRef.set(ref, arr);
+  }
+  if (!byRef.size) return false;
+
+  // Rebuild each section: replace each original block with its sub-blocks (or keep it
+  // if the model omitted that ref). Sub-blocks inherit the original timestamp + type.
+  const rebuilt: NoteBlock[][] = sections.map(() => []);
+  flat.forEach((f, i) => {
+    const subs = byRef.get(i);
+    if (subs && subs.length) {
+      for (const sub of subs) {
+        const nb: NoteBlock = { type: f.block.type, text: cleanText(sub.text, speakers) } as NoteBlock;
+        if (sub.speaker) nb.speaker = sub.speaker;
+        if (f.block.timestamp) nb.timestamp = f.block.timestamp;
+        if (nb.text) rebuilt[f.sIdx].push(nb);
+      }
+    } else {
+      rebuilt[f.sIdx].push(f.block);
+    }
+  });
+
+  sections.forEach((s, sIdx) => {
+    const c = rebuilt[sIdx].filter((b) => b.text.length > 0);
+    if (c.length) s.content = c;
+  });
+  return true;
 }

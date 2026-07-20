@@ -107,12 +107,19 @@ For a DIALOGUE (conversation OR narrated), each section:
 - The speaker of a block is WHOEVER IS TALKING AT THAT BLOCK'S TIMESTAMP in the transcript. Never
   put one person's words under another's name; when the turn changes at a timestamp, change the
   speaker there.
-- SPLIT AT EVERY TURN CHANGE. The instant a DIFFERENT person starts speaking — even a one-line reply,
-  a greeting, a question, or a handoff — END the current block and START A NEW BLOCK attributed to
-  that new speaker. NEVER put two people's words in the same block. Example: a host wrapping up
-  ("…that's where we're starting today, thank you for joining us") followed by the guest's reply
-  ("Yeah, hi, great to be here") is TWO blocks — Host, then Guest — not one. Likewise, a short
-  interjection or question from the other person is its own block.
+- ** MOST IMPORTANT RULE — SPLIT AT EVERY TURN CHANGE. ** The instant a DIFFERENT person starts
+  speaking — even a one-line reply, a greeting, a question, or a handoff — END the current block and
+  START A NEW BLOCK for that new speaker. NEVER put two people's words in one block. A reply or
+  greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right") belongs to the
+  OTHER person, not whoever was just speaking.
+  WORKED EXAMPLE — transcript fragment:
+    [0:38] that's where we're starting today thank you andrej for joining us
+    [0:41] yeah hello i'm excited to be here and to kick us off
+  WRONG (what NOT to do) — one block:
+    { "speaker": "Stephanie Zhan", "text": "That's where we're starting today. Thank you, Andrej, for joining us. Yeah, hello. I'm excited to be here and to kick us off." }
+  CORRECT — TWO blocks, because the host hands off and the guest replies:
+    { "speaker": "Stephanie Zhan", "text": "That's where we're starting today. Thank you, Andrej, for joining us.", "timestamp": "0:38" }
+    { "speaker": "Andrej Karpathy", "text": "Yeah, hello. I'm excited to be here and to kick us off.", "timestamp": "0:41" }
 - Narration vs. speech: if the narrator is describing or quoting a person, that stays the NARRATOR's
   block, in the narrator's own words (don't add or invent anything), NOT that person speaking.
   Attribute a block to a person only for their own spoken words. Be consistent — if you attribute one
@@ -275,6 +282,39 @@ export function refineUserPrompt(opts: {
     : "";
   return `Video: "${opts.videoTitle}".
 ${names}Clean each line and return the same indices with cleaned text:
+
+${opts.payload}`;
+}
+
+// ---------------------------------------------------------------------------
+// Attribution-repair pass (dialogue): fix speaker splitting the draft got wrong.
+// ---------------------------------------------------------------------------
+export const ATTRIBUTION_SYSTEM_PROMPT = `\
+You fix SPEAKER ATTRIBUTION in a note transcribed from a conversation. You receive an ordered JSON
+array of blocks: [{ "i": <number>, "speaker": <string>, "text": <string> }]. Return a JSON array of
+blocks: [{ "ref": <the original i>, "speaker": <string>, "text": <string> }], in order.
+
+Your job:
+- If a block's "text" contains words from MORE THAN ONE person, SPLIT it at the turn boundary into
+  two or more blocks — each with the correct "speaker". Emit several entries with the SAME "ref".
+  A reply or greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right", an
+  answer to a question) belongs to the OTHER person, not whoever was just speaking.
+- Fix any wrong speaker label (e.g. an interviewer's question tagged as the guest).
+- Lightly clean the text: remove filler ("uh", "um", "you know", "like"), stutters, and repeated
+  words; fix punctuation and name spelling.
+
+Do NOT drop, merge across different people, reorder, summarize, or paraphrase content. Keep every
+word (cleaned). Use ONLY the speaker names/labels present in the input plus ones clearly named in
+the text. Return ONLY the JSON array, no commentary.`;
+
+export function attributionUserPrompt(opts: {
+  videoTitle: string;
+  speakers: string[];
+  payload: string;
+}): string {
+  const names = opts.speakers.length ? `The speakers are: ${opts.speakers.join(", ")}.\n` : "";
+  return `Video: "${opts.videoTitle}".
+${names}Fix attribution (split blocks that mix two speakers) and return the JSON array:
 
 ${opts.payload}`;
 }
