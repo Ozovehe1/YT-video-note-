@@ -29,10 +29,13 @@ before the guest speaks. Do NOT judge from the opening alone — weigh the WHOLE
 clear question→answer turn-taking anywhere in the excerpt, classify it as "dialogue".
 
 Also identify the speakers, and list EVERY distinct voice — never collapse a conversation to one
-name. For an interview, that means BOTH the interviewer AND the guest (if only the guest is named,
-use "Interviewer" for the questioner, e.g. ["Interviewer", "Jane Doe"]). For a narrated video, list
-"Narrator" plus each named subject. Use real names when the transcript states them; otherwise roles
-like "Host"/"Guest" or "Speaker 1"/"Speaker 2". For a monologue, return a single speaker.
+name. ORDER MATTERS: list the INTERVIEWER/HOST (the one who welcomes, introduces, and asks the
+questions) FIRST, then the GUEST(s) who give the answers — the note generator relies on this order
+to tell who is asking from who is answering. For an interview, that means BOTH the interviewer AND
+the guest (if only the guest is named, use "Interviewer" for the questioner FIRST, e.g.
+["Interviewer", "Jane Doe"]). For a narrated video, list "Narrator" first, then each named subject.
+Use real names when the transcript states them; otherwise roles like "Host"/"Guest" or
+"Speaker 1"/"Speaker 2". For a monologue, return a single speaker.
 
 Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
 {
@@ -90,11 +93,15 @@ For a DIALOGUE (conversation OR narrated), each section:
   context; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2"). Since transcripts are unlabeled,
   infer who is speaking from context (first-person testimony vs third-person narration, Q&A, intros).
 - An INTERVIEW/CONVERSATION always has AT LEAST TWO people — you must attribute to BOTH, not lump
-  everything under one name. The INTERVIEWER/HOST asks the questions (usually shorter turns:
-  "you mentioned…", "what do you think…", "so tell me…", "how did…", "why…?") and the GUEST gives
-  the longer answers. Assign each question to the interviewer and each answer to the guest, and
-  switch the label every time the turn changes. If only the guest is named, label the questioner
-  "Interviewer" (or "Host"). Never attribute a whole back-and-forth to a single person.
+  everything under one name. ROLE MAPPING (critical — this is how you avoid swapping names): in the
+  speaker list you are given, the FIRST name is the INTERVIEWER/HOST and the following name(s) are
+  the GUEST(s). The INTERVIEWER/HOST asks the questions and does the intros/handoffs (usually shorter
+  turns: "welcome…", "thanks for joining…", "you mentioned…", "what do you think…", "so tell me…",
+  "how did…", "why…?"). The GUEST gives the longer, first-person answers about their own work/life.
+  Assign each question and intro to the interviewer (first name) and each substantive answer to the
+  guest (later name), and switch the label every time the turn changes. If only the guest is named,
+  label the questioner "Interviewer". Never attribute a whole back-and-forth to a single person, and
+  never put the host's question and the guest's answer under the same name.
 - Break a speaker's long turn into natural, readable paragraphs — each a complete thought with its
   own timestamp — all attributed to that same speaker. Do NOT cram a whole turn into one giant
   block. (The label is shown once per turn automatically, so it's fine to repeat the same speaker on
@@ -111,15 +118,19 @@ For a DIALOGUE (conversation OR narrated), each section:
   speaking — even a one-line reply, a greeting, a question, or a handoff — END the current block and
   START A NEW BLOCK for that new speaker. NEVER put two people's words in one block. A reply or
   greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right") belongs to the
-  OTHER person, not whoever was just speaking.
-  WORKED EXAMPLE — transcript fragment:
-    [0:38] that's where we're starting today thank you andrej for joining us
-    [0:41] yeah hello i'm excited to be here and to kick us off
-  WRONG (what NOT to do) — one block:
-    { "speaker": "Stephanie Zhan", "text": "That's where we're starting today. Thank you, Andrej, for joining us. Yeah, hello. I'm excited to be here and to kick us off." }
+  OTHER person, not whoever was just speaking. When a person NAMES someone ("thank you, Alex, for
+  joining", "over to you, Sam") the person being NAMED is a DIFFERENT person who speaks NEXT — never
+  the one saying the name.
+  WORKED EXAMPLE (illustration only — these are placeholder roles, NOT names from your video):
+    [0:38] that's where we're starting today thanks for joining us
+    [0:41] yeah great to be here happy to dive in
+  WRONG (what NOT to do) — one block, both voices lumped together:
+    { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us. Yeah, great to be here, happy to dive in." }
   CORRECT — TWO blocks, because the host hands off and the guest replies:
-    { "speaker": "Stephanie Zhan", "text": "That's where we're starting today. Thank you, Andrej, for joining us.", "timestamp": "0:38" }
-    { "speaker": "Andrej Karpathy", "text": "Yeah, hello. I'm excited to be here and to kick us off.", "timestamp": "0:41" }
+    { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us.", "timestamp": "0:38" }
+    { "speaker": "Guest", "text": "Yeah, great to be here, happy to dive in.", "timestamp": "0:41" }
+  (In your output use the ACTUAL names from the speaker list given in context, mapped by ROLE as
+  described below — never the words "Host"/"Guest" if real names are provided.)
 - Narration vs. speech: if the narrator is describing or quoting a person, that stays the NARRATOR's
   block, in the narrator's own words (don't add or invent anything), NOT that person speaking.
   Attribute a block to a person only for their own spoken words. Be consistent — if you attribute one
@@ -299,7 +310,11 @@ Your job:
   two or more blocks — each with the correct "speaker". Emit several entries with the SAME "ref".
   A reply or greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right", an
   answer to a question) belongs to the OTHER person, not whoever was just speaking.
-- Fix any wrong speaker label (e.g. an interviewer's question tagged as the guest).
+- Fix any wrong speaker label (e.g. an interviewer's question tagged as the guest, or two turns that
+  got their names swapped). ROLE MAPPING: when a speaker list is given, the FIRST name is the
+  interviewer/host (asks questions, does intros and handoffs) and the later name(s) are the guest(s)
+  (give the longer first-person answers). Use this to decide who asks vs. who answers, and never put
+  a question and its answer under the same name.
 - Lightly clean the text: remove filler ("uh", "um", "you know", "like"), stutters, and repeated
   words; fix punctuation and name spelling.
 
