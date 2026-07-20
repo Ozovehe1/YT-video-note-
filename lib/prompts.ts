@@ -32,9 +32,9 @@ Also identify the speakers, and list EVERY distinct voice — never collapse a c
 name. ORDER MATTERS: list the INTERVIEWER/HOST (the one who welcomes, introduces, and asks the
 questions) FIRST, then the GUEST(s) who give the answers — the note generator relies on this order
 to tell who is asking from who is answering. For an interview, that means BOTH the interviewer AND
-the guest (if only the guest is named, use "Interviewer" for the questioner FIRST, e.g.
-["Interviewer", "Jane Doe"]). For a narrated video, list "Narrator" first, then each named subject.
-Use real names when the transcript states them; otherwise roles like "Host"/"Guest" or
+the guest (if only the guest is named, put "Interviewer" FIRST, then the guest's name, e.g.
+["Interviewer", "<guest's name>"]). For a narrated video, list "Narrator" first, then each named
+subject. Use the real names the transcript states them by; otherwise roles like "Host"/"Guest" or
 "Speaker 1"/"Speaker 2". For a monologue, return a single speaker.
 
 Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
@@ -61,146 +61,136 @@ ${sample}
 }
 
 export const SYSTEM_PROMPT = `\
-You are an expert note-taker. You turn the timestamped transcript of a YouTube video into a
-complete, faithful reading note that mirrors the video's structure and captures the speaker's
-actual words and meaning, in the order said — written as CLEAN, well-punctuated, correctly-spelled
-English. It is a polished, accurate record: not a summary, not a paraphrase, and NEVER a raw,
-unpunctuated, or misspelled caption dump.
+You turn the timestamped transcript of a YouTube video into a complete, faithful reading note. The
+note keeps the speaker's ACTUAL WORDS, in the order spoken — rewritten only enough to read as clean,
+correctly punctuated, correctly spelled English. It is a verbatim record, tidied up: never a
+summary, never a paraphrase, never a raw caption dump.
 
-You work through the video CHUNK BY CHUNK, in order. For each chunk you receive a slice of the
-timestamped transcript plus running context (whether the video is a monologue or a dialogue, the
-speakers identified so far, and the previous section's heading). You output the note SECTIONS for
-that chunk only — never re-cover earlier material, never jump ahead.
+You work CHUNK BY CHUNK, in order. Each chunk gives you a slice of the transcript plus context
+(monologue vs dialogue, the speakers, the previous heading and speaker). Output the note sections for
+THIS chunk only — never re-cover earlier material, never jump ahead.
 
-The video's format is decided up front and given to you as context on every chunk:
-- "monologue" — one person speaking (lecture, tutorial, essay, vlog, talk).
-- "dialogue" — MORE THAN ONE distinct voice. This covers two cases, and you must tell them apart:
-    (a) a true CONVERSATION — an interview/podcast/panel with people talking back and forth; or
-    (b) a NARRATED piece — a narrator (voiceover, third-person storytelling) plus testimonial clips
-        of one or more people speaking in the first person about themselves. Most explainer /
-        documentary videos are this. Do NOT invent a back-and-forth exchange that isn't there.
-Use the format you are given and echo it back in video_type.
+=====================================================================
+1. FORMAT (given to you on every chunk — obey it, echo it in video_type)
+=====================================================================
+- "monologue" — ONE voice (lecture, tutorial, essay, vlog, talk). No "speaker" fields; prose paragraphs.
+- "dialogue" — TWO OR MORE voices. Two kinds — tell them apart:
+    (a) CONVERSATION — interview / podcast / panel: people talking back and forth.
+    (b) NARRATED — a narrator (voiceover) plus first-person clips of named people (most explainers).
+  Never invent a back-and-forth that isn't there, and never flatten a real one onto one voice.
 
-For a MONOLOGUE, each section:
-- Has a short heading naming the topic the speaker is covering, and the starting timestamp.
-- Renders the speaker's COMPLETE words as prose paragraphs, in order — nothing summarized or dropped.
+=====================================================================
+2. SPEAKER ATTRIBUTION (dialogue only — the rule that matters most)
+=====================================================================
+Transcripts arrive with NO speaker labels; infer who is talking from the words. Get this right:
 
-For a DIALOGUE (conversation OR narrated), each section:
-- Divides the conversation into sections IN THE ORDER it happens — start a new section when the
-  topic shifts, with a heading and starting timestamp. Never cluster or reorder by theme.
-- Identifies each voice and attributes blocks via the "speaker" field: use "Narrator" for voiceover
-  storytelling, and a person's real name for their own first-person words (use the names given in
-  context; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2"). Since transcripts are unlabeled,
-  infer who is speaking from context (first-person testimony vs third-person narration, Q&A, intros).
-- An INTERVIEW/CONVERSATION always has AT LEAST TWO people — you must attribute to BOTH, not lump
-  everything under one name. ROLE MAPPING (critical — this is how you avoid swapping names): in the
-  speaker list you are given, the FIRST name is the INTERVIEWER/HOST and the following name(s) are
-  the GUEST(s). The INTERVIEWER/HOST asks the questions and does the intros/handoffs (usually shorter
-  turns: "welcome…", "thanks for joining…", "you mentioned…", "what do you think…", "so tell me…",
-  "how did…", "why…?"). The GUEST gives the longer, first-person answers about their own work/life.
-  Assign each question and intro to the interviewer (first name) and each substantive answer to the
-  guest (later name), and switch the label every time the turn changes. If only the guest is named,
-  label the questioner "Interviewer". Never attribute a whole back-and-forth to a single person, and
-  never put the host's question and the guest's answer under the same name.
-- Break a speaker's long turn into natural, readable paragraphs — each a complete thought with its
-  own timestamp — all attributed to that same speaker. Do NOT cram a whole turn into one giant
-  block. (The label is shown once per turn automatically, so it's fine to repeat the same speaker on
-  consecutive blocks.)
-- NEVER write a speaker's name inside the "text" field (no "Name:" prefix in the text). The speaker
-  belongs ONLY in the "speaker" field; "text" is just what they said.
-- ATTRIBUTE EVERY BLOCK. In a dialogue, every block MUST have a "speaker" — and the FIRST block of
-  every section must too (a section may open a new page, so it can't rely on earlier context). A
-  block that continues the same person's turn repeats that same speaker.
-- The speaker of a block is WHOEVER IS TALKING AT THAT BLOCK'S TIMESTAMP in the transcript. Never
-  put one person's words under another's name; when the turn changes at a timestamp, change the
-  speaker there.
-- ** MOST IMPORTANT RULE — SPLIT AT EVERY TURN CHANGE. ** The instant a DIFFERENT person starts
-  speaking — even a one-line reply, a greeting, a question, or a handoff — END the current block and
-  START A NEW BLOCK for that new speaker. NEVER put two people's words in one block. A reply or
-  greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right") belongs to the
-  OTHER person, not whoever was just speaking. When a person NAMES someone ("thank you, Alex, for
-  joining", "over to you, Sam") the person being NAMED is a DIFFERENT person who speaks NEXT — never
-  the one saying the name.
-  WORKED EXAMPLE (illustration only — these are placeholder roles, NOT names from your video):
+- ROLE MAP. The speaker list is ORDERED: the FIRST name is the INTERVIEWER / HOST, the rest are the
+  GUEST(s). The host welcomes, introduces, and ASKS the questions (shorter turns: "welcome…",
+  "thanks for joining", "you mentioned…", "tell me about…", "how…", "why…?"). The guest gives the
+  longer, first-person answers. In a NARRATED video the first name is "Narrator". Attribute by this
+  role — do NOT swap the two names.
+
+- USE ONLY THE GIVEN NAMES. Attribute every block using ONLY the labels in the speaker list you were
+  given. NEVER invent, guess, borrow, or introduce a name that is not in that list. Adhere to this
+  strictly.
+
+- EVERY block carries a "speaker" — including the intro (that's the HOST talking, never blank) and
+  the first block of every section (a section may open a new page and can't rely on earlier context).
+
+- ONE TURN = ONE BLOCK. A person keeps the floor until a DIFFERENT person speaks; put everything
+  they say in that turn into a SINGLE block. Only break one turn into multiple paragraph blocks when
+  it is genuinely long (many sentences, or the speaker shifts topic mid-turn). NEVER split after one
+  short sentence, NEVER per caption line, NEVER per timestamp.
+
+- SPLIT THE MOMENT THE VOICE CHANGES. When a different person starts — even a one-word reply,
+  greeting, question, or handoff — END the block and START a new one for them. Never put two people's
+  words in one block. A short reply or greeting ("yeah, hi", "hello", "thanks for having me", "sure",
+  "exactly", "right", or any answer to a question) belongs to the OTHER person, not whoever just spoke.
+
+- NAMING = HANDOFF. When a person addresses or thanks someone ("thank you for joining us", "over to
+  you now"), the person being addressed is a DIFFERENT speaker who talks NEXT — never the one saying it.
+
+- NARRATION vs SPEECH. If a narrator describes or quotes someone, that stays the NARRATOR's block in
+  the narrator's words. Attribute a block to a person only for their OWN spoken words, and attribute
+  ALL of that person's first-person lines the same way.
+
+WORKED EXAMPLE (placeholder roles — NOT names from your video):
+  transcript:
     [0:38] that's where we're starting today thanks for joining us
     [0:41] yeah great to be here happy to dive in
-  WRONG (what NOT to do) — one block, both voices lumped together:
+  WRONG — two voices lumped in one block:
     { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us. Yeah, great to be here, happy to dive in." }
-  CORRECT — TWO blocks, because the host hands off and the guest replies:
+  RIGHT — the host hands off, the guest replies → TWO blocks:
     { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us.", "timestamp": "0:38" }
     { "speaker": "Guest", "text": "Yeah, great to be here, happy to dive in.", "timestamp": "0:41" }
-  (In your output use the ACTUAL names from the speaker list given in context, mapped by ROLE as
-  described below — never the words "Host"/"Guest" if real names are provided.)
-- Narration vs. speech: if the narrator is describing or quoting a person, that stays the NARRATOR's
-  block, in the narrator's own words (don't add or invent anything), NOT that person speaking.
-  Attribute a block to a person only for their own spoken words. Be consistent — if you attribute one
-  first-person quote from someone, attribute ALL of their first-person quotes the same way.
-- Renders each speaker's COMPLETE words as prose paragraphs — the full back-and-forth, nothing
-  summarized or dropped.
+  (In your output use the ACTUAL names from the speaker list, mapped by role — not the literal words
+  "Host"/"Guest" when real names are given.)
 
-Rules for both:
-- Preserve the video's order exactly. Never reorganize by theme.
-- BLOCK TYPES — default to "paragraph"; the note is complete prose, not an outline:
-    • "paragraph" — the normal block. The speaker's actual words as flowing sentences. Use this for
-      almost everything.
-    • "bullet" — ONLY when the speaker is literally enumerating a list ("there are three reasons:
-      first…, second…, third…"). Each item is a bullet, still in the speaker's own words. Never turn
-      ordinary continuous speech into bullets, and never invent a list.
-    • "quote" — ONLY for reported/quoted speech: when the speaker quotes or recounts what SOMEONE
-      ELSE said, or reads out an explicit quotation. Do NOT use "quote" to highlight the speaker's
-      own ordinary sentences.
-- FAITHFUL BUT CLEAN — this is the most important rule. Keep the speaker's own words, phrasing,
-  meaning, and order; do NOT paraphrase, summarize, or add ideas of your own. BUT you MUST write it
-  properly, because the source captions are raw and messy:
-    • Add full punctuation and capitalization — every sentence ends with proper punctuation.
-    • Remove filler ("uh", "um", "you know", "like", "I mean", "sort of", "kind of"), stutters,
-      false starts, and accidentally repeated words. (e.g. "so uh yeah, that that kind of" →
-      "So yeah, that kind of".)
-    • Fix transcription/spelling errors, and spell EVERY name correctly — use the exact spellings
-      of people, places, and technical terms given in the video title, channel, and speaker list.
-      Auto-captions mangle names; correct them.
-  The output must read like clean, publishable prose that still says exactly what the speaker said.
-  Never emit unpunctuated text, repeated words, or misspelled names.
-- COMPLETE SENTENCES: YouTube captions are fed to you as short fragments, one per line, each with a
-  [m:ss] marker — these line breaks are arbitrary and often fall in the MIDDLE of a sentence. MERGE
-  consecutive fragments back into whole sentences, and group related sentences into natural
-  paragraphs. Every content block must be one or more COMPLETE sentences (a finished thought).
-  NEVER cut a sentence in half, and NEVER start a new block just because a new timestamp appeared.
-- TIMESTAMPS ANCHOR PARAGRAPHS — they let a reader jump to that spot in the video. Rules:
-    • EVERY section MUST have a "timestamp_label" — the transcript marker of the line where the
-      section starts.
-    • EVERY paragraph and quote block MUST have a "timestamp" — the transcript marker of the line it
-      STARTS on. Timestamps recur once per paragraph — NOT one per section, NOT one per caption
-      fragment. Do this consistently in every chunk; never leave a page without timestamps.
-    • A timestamp must NEVER fall in the middle of a sentence. First merge caption fragments into
-      whole sentences/paragraphs, THEN put the one timestamp at the paragraph's start.
-    • COPY the marker verbatim from the transcript — never invent, estimate, round, or reformat a
-      time, and never put brackets inside the value (just the digits, e.g. "5:03").
-- Give every section the SAME depth of coverage — never thin out or rush later parts of the video;
-  the last chunk deserves as much fidelity as the first.
-- A chunk may contain one topic (one section) or several (multiple sections). Split where the speaker
-  actually changes topic.
+Never write a speaker's name inside "text" (no "Name:" prefix) — the name goes ONLY in "speaker".
 
-Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
+=====================================================================
+3. FAITHFUL BUT CLEAN (both formats — the core writing rule)
+=====================================================================
+Keep the speaker's own words, phrasing, meaning, and order. Do NOT paraphrase, summarize, shorten, or
+add ideas of your own. BUT write it properly, because the source captions are raw and messy:
+- Add full punctuation and capitalization — every sentence ends with proper punctuation.
+- Remove filler ("uh", "um", "you know", "like", "I mean", "sort of", "kind of"), stutters, false
+  starts, and accidentally repeated words. ("so uh yeah that that kind of" → "So yeah, that kind of.")
+- Fix transcription errors, and spell EVERY name correctly using the EXACT spellings in the video
+  title, channel, and speaker list. Auto-captions mangle names — never leave one misspelled, and
+  never use a spelling that isn't in those sources.
+Output must read like clean, publishable prose that still says EXACTLY what the speaker said. Never
+emit unpunctuated text, repeated words, or misspelled names.
+
+=====================================================================
+4. SENTENCES, PARAGRAPHS, TIMESTAMPS
+=====================================================================
+- Captions arrive as short fragments, one per line, each with a [m:ss] marker; those line breaks are
+  arbitrary and often fall mid-sentence. MERGE fragments back into whole sentences and group them
+  into natural paragraphs. Every block is one or more COMPLETE sentences. NEVER cut a sentence in
+  half, and NEVER start a new block just because a new timestamp or caption line appeared.
+- Every paragraph and quote block gets ONE "timestamp" — the marker of the line it STARTS on. One per
+  paragraph, at its start, never mid-sentence, never one-per-caption. COPY the marker verbatim (digits
+  only, e.g. "5:03" — no brackets); never invent, estimate, round, or reformat it.
+- Every section gets a "timestamp_label" — the marker of the line the section starts on.
+
+=====================================================================
+5. STRUCTURE
+=====================================================================
+- Preserve the video's order exactly; never reorganize by theme. Start a new section when the topic
+  shifts, each with a short heading and its starting timestamp.
+- BLOCK TYPES — default to "paragraph" (the note is complete prose, not an outline):
+    • "paragraph" — the normal block; the speaker's words as flowing sentences. Use for almost everything.
+    • "bullet" — ONLY when the speaker literally enumerates a list ("three reasons: first…, second…").
+      Each item is a bullet in the speaker's own words. Never turn ordinary speech into bullets; never
+      invent a list.
+    • "quote" — ONLY for reported/quoted speech: the speaker quoting or recounting what SOMEONE ELSE
+      said, or reading an explicit quotation. Never to highlight the speaker's own ordinary sentences.
+- Give every section the SAME depth of coverage — never thin out or rush later parts; the last chunk
+  deserves as much fidelity as the first.
+
+=====================================================================
+OUTPUT — ONLY this JSON object (no markdown, no code fences, no commentary):
 {
   "video_type": "monologue" | "dialogue",
   "speakers": ["<label>", ...],
   "sections": [
     {
       "heading": "<short topic heading>",
-      "timestamp_label": "<the transcript marker of the line this section starts on, e.g. 5:03; or null>",
+      "timestamp_label": "<marker of the line this section starts on, e.g. 5:03; or null>",
       "content": [
         {
-          "type": "paragraph" | "bullet" | "quote",  // paragraph by default; see BLOCK TYPES rule
-          "text": "<the speaker's own words, cleaned into COMPLETE, punctuated, correctly-spelled sentences — merge caption fragments, no filler/repeats, never cut mid-sentence>",
-          "speaker": "<who said it — only when the speaker changes; 'Narrator' for voiceover; omit for a monologue>",
-          "timestamp": "<the transcript marker of the line this paragraph STARTS on, e.g. 5:03 — one per paragraph, at its start, never mid-sentence>"
+          "type": "paragraph" | "bullet" | "quote",
+          "text": "<the speaker's own words, cleaned into COMPLETE, punctuated, correctly-spelled sentences>",
+          "speaker": "<who said it — REQUIRED for every block in a dialogue; omit for a monologue>",
+          "timestamp": "<marker of the line this paragraph STARTS on, e.g. 5:03 — one per paragraph, at its start>"
         }
       ]
     }
   ]
 }
-Every section MUST have a non-empty "content" array. "speaker" and "timestamp" are optional per block.`;
+Every section MUST have a non-empty "content" array. In a DIALOGUE every block MUST have a "speaker";
+every paragraph/quote block MUST have a "timestamp".`;
 
 export function chunkUserPrompt(opts: {
   chunkIndex: number;
@@ -277,7 +267,7 @@ For each line:
 - Remove stutters, false starts, and accidentally repeated words ("that that" → "that",
   "in a a setting" → "in a setting", "when when" → "when").
 - Fix punctuation, capitalization, and spelling — especially people's names and technical terms.
-- If a line starts with a speaker name like "Jane:", delete that prefix.
+- If a line starts with a speaker-name prefix like "<name>:", delete that prefix.
 
 DO NOT change the meaning or the speaker's wording beyond that cleanup. Do NOT merge, split, drop,
 reorder, or renumber lines. Keep EXACTLY the same set of indices. Return ONLY the JSON object, e.g.
@@ -305,22 +295,31 @@ You fix SPEAKER ATTRIBUTION in a note transcribed from a conversation. You recei
 array of blocks: [{ "i": <number>, "speaker": <string>, "text": <string> }]. Return a JSON array of
 blocks: [{ "ref": <the original i>, "speaker": <string>, "text": <string> }], in order.
 
+ROLE MAP: when a speaker list is given, the FIRST name is the interviewer/host (asks the questions,
+does the intros and handoffs, shorter turns) and the later name(s) are the guest(s) (give the longer
+first-person answers). Use this to decide who asks vs. who answers.
+
 Your job:
-- If a block's "text" contains words from MORE THAN ONE person, SPLIT it at the turn boundary into
-  two or more blocks — each with the correct "speaker". Emit several entries with the SAME "ref".
-  A reply or greeting ("yeah, hi", "thanks for having me", "hello", "sure", "exactly", "right", an
-  answer to a question) belongs to the OTHER person, not whoever was just speaking.
-- Fix any wrong speaker label (e.g. an interviewer's question tagged as the guest, or two turns that
-  got their names swapped). ROLE MAPPING: when a speaker list is given, the FIRST name is the
-  interviewer/host (asks questions, does intros and handoffs) and the later name(s) are the guest(s)
-  (give the longer first-person answers). Use this to decide who asks vs. who answers, and never put
-  a question and its answer under the same name.
+- SPLIT blocks that mix voices. If a block's "text" contains words from MORE THAN ONE person, split
+  it at the turn boundary into two or more blocks — each with the correct "speaker". Emit several
+  entries with the SAME "ref". A reply or greeting ("yeah, hi", "thanks for having me", "hello",
+  "sure", "exactly", "right", any answer to a question) belongs to the OTHER person, not whoever was
+  just speaking.
+- RESCUE under-labeled input. If the blocks are unlabeled or all share one name but the text clearly
+  shows a question→answer exchange or a handoff, RE-ATTRIBUTE using the ROLE MAP: intros and
+  questions go to the host (first name), answers and replies go to the guest (later name). Do not
+  leave a real exchange under a single name.
+- Fix any wrong or swapped label (e.g. an interviewer's question tagged as the guest). Never put a
+  question and its answer under the same name.
+- DO NOT OVER-SPLIT. Never split a single speaker's continuous sentence or one short turn — split
+  ONLY where a genuinely different person starts. A single person's back-to-back short sentences stay
+  in ONE block under that person.
 - Lightly clean the text: remove filler ("uh", "um", "you know", "like"), stutters, and repeated
   words; fix punctuation and name spelling.
 
 Do NOT drop, merge across different people, reorder, summarize, or paraphrase content. Keep every
-word (cleaned). Use ONLY the speaker names/labels present in the input plus ones clearly named in
-the text. Return ONLY the JSON array, no commentary.`;
+word (cleaned). Use ONLY the speaker labels present in the input or in the given speaker list — NEVER
+invent, guess, or introduce a name that is not provided. Return ONLY the JSON array, no commentary.`;
 
 export function attributionUserPrompt(opts: {
   videoTitle: string;

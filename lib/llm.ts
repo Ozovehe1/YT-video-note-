@@ -364,6 +364,9 @@ export async function classifyVideo(opts: {
       system: CLASSIFY_SYSTEM_PROMPT,
       user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
       maxTokens: 2048,
+      // Room to reason about turn-taking / who the speakers are, rather than latching
+      // onto the intro's solo-host reading.
+      temperature: 0.7,
     }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
@@ -422,7 +425,14 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
             { model: DRAFT_MODEL, timeoutMs: 30000 },
             { model: MODEL, timeoutMs: 15000 },
           ],
-          { system: SYSTEM_PROMPT, user: chunkUserPrompt({ ...opts, isFirst }), maxTokens: 4000 },
+          {
+            system: SYSTEM_PROMPT,
+            user: chunkUserPrompt({ ...opts, isFirst }),
+            maxTokens: 4000,
+            // Enough sampling room to actually reason about who is speaking (attribution
+            // is inference, not rote copying) while staying faithful to the wording.
+            temperature: 0.7,
+          },
         )
       : // Default: fast model with the normal fallback chain.
         await chat({
@@ -430,6 +440,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
           user: chunkUserPrompt({ ...opts, isFirst }),
           maxTokens: 4000,
           timeoutMs: 22000, // draft + repair must both fit the 60s serverless limit
+          temperature: 0.7,
         }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
@@ -483,6 +494,9 @@ export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk>
 
   // Consistency guarantees, always applied last (after any splitting/relabeling):
   if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
+  // Re-stitch now that speakers are fully populated, so any micro-turns the repair pass
+  // left over-split (same speaker, tiny blocks) collapse back into one block.
+  for (const s of parsed.sections) s.content = stitchFragments(s.content);
   backfillSectionTimestamps(parsed.sections);
 
   return parsed;
@@ -592,6 +606,71 @@ const SAFE_DUP = new Set([
   "a", "the", "and", "to", "of", "in", "on", "when", "so", "it", "i", "you", "we", "um", "uh",
 ]);
 
+// Role labels are not personal names, so we never "correct" a word toward them.
+const ROLE_LABELS = new Set([
+  "host", "guest", "interviewer", "narrator", "speaker", "moderator", "panelist", "cohost",
+]);
+
+/** Bounded Levenshtein (returns >max as max+1) — enough to spot a 1-char slip cheaply. */
+function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      cur[j] = v;
+      if (v < best) best = v;
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** Proper-name tokens drawn from the speaker labels — used to fix captions that mangle names. */
+function nameTokens(speakers: string[]): string[] {
+  const toks = new Set<string>();
+  for (const s of speakers) {
+    for (const raw of s.split(/\s+/)) {
+      const t = raw.replace(/[^A-Za-z'’-]/g, "");
+      // Only real, capitalised names of a useful length — skip roles and short particles.
+      if (t.length >= 4 && /^[A-Z]/.test(t) && !ROLE_LABELS.has(t.toLowerCase())) toks.add(t);
+    }
+  }
+  return [...toks];
+}
+
+/** True when `word` looks like a mis-transcription of the canonical `name`. Conservative. */
+function isNameMisspelling(word: string, name: string): boolean {
+  if (word === name) return false;
+  const w = word.toLowerCase();
+  const n = name.toLowerCase();
+  if (w === n) return false; // same letters, different case — leave casing alone
+  // Truncation, e.g. "Andre" for "Andrej".
+  if (w.length >= 4 && n.startsWith(w) && n.length - w.length <= 2) return true;
+  // Near-miss spelling for longer names, e.g. "Stephany" for "Stephanie".
+  if (name.length >= 5 && Math.abs(w.length - n.length) <= 1 && editDistance(w, n, 1) <= 1) return true;
+  return false;
+}
+
+/**
+ * Snap capitalised words that are near-misses of a known speaker name to the exact
+ * spelling from the speaker list (e.g. "Andre" → "Andrej"). Only touches proper-noun-
+ * position words and only when confidently close, so ordinary words are never altered.
+ */
+function correctNames(text: string, tokens: string[]): string {
+  if (!tokens.length) return text;
+  return text.replace(/\b[A-Z][A-Za-z'’-]{2,}\b/g, (word) => {
+    for (const name of tokens) {
+      if (isNameMisspelling(word, name)) return name;
+    }
+    return word;
+  });
+}
+
 /** Clean one block's text: drop a stray "Name:" prefix, filler, and stutters; tidy spacing. */
 function cleanText(text: string, speakers: string[]): string {
   let t = typeof text === "string" ? text : "";
@@ -611,29 +690,34 @@ function cleanText(text: string, speakers: string[]): string {
   t = t.replace(/\b(?:um|uh)\b[,]?/gi, " ");
   // Collapse immediate exact duplicate words, but only the safe set.
   t = t.replace(/\b(\w+)(\s+\1\b)+/gi, (m, w: string) => (SAFE_DUP.has(w.toLowerCase()) ? w : m));
+  // Fix names the captions mangled ("Andre" → "Andrej") using the known speaker spellings.
+  t = correctNames(t, nameTokens(speakers));
   // Tidy: collapse spaces, remove space before punctuation, strip leading punctuation/space.
   t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").replace(/^[\s,]+/, "").trim();
   if (t) t = t[0].toUpperCase() + t.slice(1);
   return t;
 }
 
+// Two adjacent same-speaker paragraphs whose combined length stays under this are
+// treated as one over-split turn and merged (e.g. "Yeah, hello." + "I'm excited to be
+// here…"). Larger blocks are real, deliberately separate paragraphs and stay apart.
+const MICRO_TURN_CHARS = 200;
+
 /**
- * Stitch back only TRUE fragments: join an adjacent same-speaker paragraph into the
- * previous one ONLY when the previous text didn't end a sentence (a cut-off caption).
- * Complete paragraphs stay separate so each keeps its own timestamp/structure.
+ * Join an adjacent SAME-SPEAKER paragraph into the previous one when either (a) the
+ * previous text didn't end a sentence (a cut-off caption), or (b) the two together are
+ * short enough to be one turn the model wrongly split. Never merges across a speaker
+ * change, and leaves genuinely long paragraphs separate so each keeps its own timestamp.
  */
 function stitchFragments(content: NoteBlock[]): NoteBlock[] {
   const out: NoteBlock[] = [];
   for (const b of content) {
     const last = out[out.length - 1];
+    const sameSpeaker = last ? (last.speaker ?? "") === (b.speaker ?? "") : false;
+    const bothParagraph = last ? last.type === "paragraph" && b.type === "paragraph" : false;
     const prevUnfinished = last ? !/[.!?…"')\]]\s*$/.test(last.text) : false;
-    if (
-      last &&
-      last.type === "paragraph" &&
-      b.type === "paragraph" &&
-      (last.speaker ?? "") === (b.speaker ?? "") &&
-      prevUnfinished
-    ) {
+    const combinedShort = last ? last.text.length + b.text.length <= MICRO_TURN_CHARS : false;
+    if (last && bothParagraph && sameSpeaker && (prevUnfinished || combinedShort)) {
       last.text = `${last.text} ${b.text}`.replace(/\s{2,}/g, " ").trim();
       continue; // keep the earlier block's timestamp
     }
@@ -706,7 +790,7 @@ async function refineTexts(sections: Section[], title: string, speakers: string[
       user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(map) }),
       maxTokens: 4000,
       timeoutMs: 12000, // fast: it runs after the draft, and both must fit 60s
-      temperature: 0.2,
+      temperature: 0.5, // mechanical cleanup — kept lower to protect verbatim wording
     });
     const cleaned = parseJsonObject<Record<string, unknown>>(text);
     let applied = false;
@@ -746,7 +830,9 @@ async function repairAttribution(sections: Section[], title: string, speakers: s
       user: attributionUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(input) }),
       maxTokens: 4000,
       timeoutMs: 12000,
-      temperature: 0.2,
+      // Attribution is the reasoning-heavy pass; give it room so it doesn't collapse the
+      // whole exchange onto one speaker.
+      temperature: 0.7,
     });
     out = parseJsonArray(text);
   } catch {
