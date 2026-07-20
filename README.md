@@ -72,8 +72,8 @@ cp .env.example .env.local   # then fill in your keys
 
 ```
 NVIDIA_API_KEY=nvapi-...
-LLM_MODEL=meta/llama-3.3-70b-instruct
-LLM_FALLBACK_MODELS=deepseek-ai/deepseek-v4-flash,meta/llama-3.1-8b-instruct,deepseek-ai/deepseek-v4-pro
+LLM_MODEL=deepseek-ai/deepseek-v4-flash
+LLM_FALLBACK_MODELS=meta/llama-3.1-8b-instruct,meta/llama-3.3-70b-instruct,deepseek-ai/deepseek-v4-pro
 LLM_BASE_URL=https://integrate.api.nvidia.com/v1
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...

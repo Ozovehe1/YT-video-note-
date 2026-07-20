@@ -15,11 +15,14 @@ import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 // needed. Everything is overridable by env var.
 // ---------------------------------------------------------------------------
 export const BASE_URL = process.env.LLM_BASE_URL || "https://integrate.api.nvidia.com/v1";
-export const MODEL = process.env.LLM_MODEL || "meta/llama-3.3-70b-instruct";
+// deepseek-v4-flash is confirmed fast + healthy on NVIDIA's free tier (the 70B
+// llama was too slow and timed out). Fast models are essential: each call must
+// finish inside Vercel's hard 60s limit.
+export const MODEL = process.env.LLM_MODEL || "deepseek-ai/deepseek-v4-flash";
 
 const FALLBACK_MODELS = (
   process.env.LLM_FALLBACK_MODELS ||
-  "deepseek-ai/deepseek-v4-flash,meta/llama-3.1-8b-instruct,deepseek-ai/deepseek-v4-pro"
+  "meta/llama-3.1-8b-instruct,meta/llama-3.3-70b-instruct,deepseek-ai/deepseek-v4-pro"
 )
   .split(",")
   .map((s) => s.trim())
@@ -65,7 +68,7 @@ class ProviderError extends Error {
   }
 }
 
-/** A model that's down/unknown (as opposed to a real bad request) — try the next one. */
+/** A model that's down/unknown (fast failure) — try the next one immediately. */
 function isModelUnavailable(err: unknown): boolean {
   if (!(err instanceof ProviderError)) return false;
   if (err.status >= 500 || err.status === 404) return true;
@@ -75,6 +78,12 @@ function isModelUnavailable(err: unknown): boolean {
       err.body,
     )
   );
+}
+
+/** A model that hung and was aborted by our timeout — also worth failing over from. */
+function isTimeout(err: unknown): boolean {
+  const e = err as { name?: unknown };
+  return e?.name === "AbortError" || e?.name === "TimeoutError";
 }
 
 /** One raw call to a single model. Throws ProviderError on a non-OK response. */
@@ -155,8 +164,13 @@ async function chat(opts: {
 }): Promise<{ text: string; finishReason: string | null; model: string }> {
   const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
   let lastErr: unknown;
+  const started = Date.now();
 
   for (const model of order) {
+    // Don't begin another attempt if there isn't time left under the 60s ceiling.
+    // Fast failures (DEGRADED/404) keep elapsed low so they still loop freely; slow
+    // aborts eat the budget, so this caps them at ~2 attempts before handing back.
+    if (Date.now() - started > 45000) break;
     try {
       const r = await callOnce({ model, ...opts });
       activeIndex = MODELS.indexOf(model); // this one works — prefer it next time
@@ -165,12 +179,12 @@ async function chat(opts: {
       if (err instanceof ProviderError && err.status === 429) {
         throw new RateLimitError(err.retryAfter ?? 15);
       }
-      if (isModelUnavailable(err)) {
+      if (isModelUnavailable(err) || isTimeout(err)) {
         lastErr = err;
-        console.warn(`[llm] model ${model} unavailable, trying next:`, (err as Error).message);
+        console.warn(`[llm] model ${model} unavailable/slow, trying next:`, (err as Error).message);
         continue;
       }
-      throw err; // a real error (bad request, timeout, network) — don't mask it
+      throw err; // a real error (bad request, network) — don't mask it
     }
   }
   throw lastErr ?? new Error("All candidate models are unavailable.");
@@ -198,10 +212,7 @@ function parseJsonObject<T>(text: string): T {
 // Candidate models the diagnostic health-checks. Includes the fallback list plus a
 // couple extras. Override with LLM_PROBE_MODELS (comma-separated).
 const PROBE_MODELS = (
-  process.env.LLM_PROBE_MODELS ||
-  Array.from(
-    new Set([...MODELS, "deepseek-ai/deepseek-r1", "qwen/qwen2.5-7b-instruct"]),
-  ).join(",")
+  process.env.LLM_PROBE_MODELS || MODELS.join(",")
 )
   .split(",")
   .map((m) => m.trim())
@@ -344,6 +355,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
       system: SYSTEM_PROMPT,
       user: chunkUserPrompt({ ...opts, isFirst }),
       maxTokens: 4000, // smaller = the call returns fast enough to fit the 60s limit
+      timeoutMs: 26000, // so a slow model can be abandoned and a second one still fits
     }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
