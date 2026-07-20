@@ -19,13 +19,20 @@ words themselves. Signals of a DIALOGUE:
   "let me ask you", "you mentioned", "so you're saying", "tell me about", introducing a guest.
 - Two or more distinct people are clearly present and responding to each other.
 
+A NARRATED / DOCUMENTARY video also counts as "dialogue": a narrator (voiceover, third-person
+storytelling) plus testimonial clips of one or more people speaking in the first person about
+themselves. Most explainer/documentary videos are this. When you see voiceover storytelling mixed
+with first-person clips, classify as "dialogue" and include "Narrator" plus each named person.
+
 CRUCIAL: the OPENING of a dialogue is very often a single host talking alone (an intro/monologue)
 before the guest speaks. Do NOT judge from the opening alone — weigh the WHOLE excerpt. If there is
 clear question→answer turn-taking anywhere in the excerpt, classify it as "dialogue".
 
-Also identify the speakers: use real names if the transcript states them (hosts often say the
-guest's name in the intro); otherwise use roles like "Host" and "Guest", or "Speaker 1" /
-"Speaker 2". For a monologue, return a single speaker (the narrator/presenter or their name).
+Also identify the speakers, and list EVERY distinct voice — never collapse a conversation to one
+name. For an interview, that means BOTH the interviewer AND the guest (if only the guest is named,
+use "Interviewer" for the questioner, e.g. ["Interviewer", "Jane Doe"]). For a narrated video, list
+"Narrator" plus each named subject. Use real names when the transcript states them; otherwise roles
+like "Host"/"Guest" or "Speaker 1"/"Speaker 2". For a monologue, return a single speaker.
 
 Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
 {
@@ -63,9 +70,12 @@ that chunk only — never re-cover earlier material, never jump ahead.
 
 The video's format is decided up front and given to you as context on every chunk:
 - "monologue" — one person speaking (lecture, tutorial, essay, vlog, talk).
-- "dialogue" — a conversation between two or more people (interview, podcast, panel, debate).
-Use the format you are given and echo it back in video_type. (If it is ever missing, infer it from
-this chunk — clear question→answer turn-taking between people means "dialogue".)
+- "dialogue" — MORE THAN ONE distinct voice. This covers two cases, and you must tell them apart:
+    (a) a true CONVERSATION — an interview/podcast/panel with people talking back and forth; or
+    (b) a NARRATED piece — a narrator (voiceover, third-person storytelling) plus testimonial clips
+        of one or more people speaking in the first person about themselves. Most explainer /
+        documentary videos are this. Do NOT invent a back-and-forth exchange that isn't there.
+Use the format you are given and echo it back in video_type.
 
 For a MONOLOGUE, each section:
 - Has a short heading naming the topic the speaker is covering, and the starting timestamp.
@@ -73,13 +83,26 @@ For a MONOLOGUE, each section:
   examples, numbers, caveats. Do NOT summarize detail away; this is a complete note, not an abstract.
 - Pulls out especially important or quotable lines as quote blocks with their timestamp.
 
-For a DIALOGUE, each section:
-- Groups the conversation by the topic being discussed, with a heading and starting timestamp.
-- Attributes every substantive point to its speaker via the block's "speaker" field. Use real names
-  when the transcript states them; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2". Since YouTube
-  transcripts are unlabeled, infer turns from context (questions vs answers, "so tell me…", intros).
-- Captures the full substance of each answer — disagreements, follow-ups, anecdotes — and pulls key
-  exchanges into quote blocks.
+For a DIALOGUE (conversation OR narrated), each section:
+- Groups the material by the topic being discussed, with a heading and starting timestamp.
+- Identifies each voice and attributes blocks via the "speaker" field: use "Narrator" for voiceover
+  storytelling, and a person's real name for their own first-person words (use the names given in
+  context; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2"). Since transcripts are unlabeled,
+  infer who is speaking from context (first-person testimony vs third-person narration, Q&A, intros).
+- An INTERVIEW/CONVERSATION always has AT LEAST TWO people — you must attribute to BOTH, not lump
+  everything under one name. The INTERVIEWER/HOST asks the questions (usually shorter turns:
+  "you mentioned…", "what do you think…", "so tell me…", "how did…", "why…?") and the GUEST gives
+  the longer answers. Assign each question to the interviewer and each answer to the guest, and
+  switch the label every time the turn changes. If only the guest is named, label the questioner
+  "Interviewer" (or "Host"). Never attribute a whole back-and-forth to a single person.
+- Set "speaker" ONLY when the speaker changes; merge everything one voice says continuously into a
+  single block — never repeat the same speaker label on back-to-back blocks.
+- Narration vs. speech: if the narrator is describing or quoting a person, that is the NARRATOR's
+  block (name whom they mention in the text), NOT that person speaking. Attribute a block to a
+  person only for their own spoken words. Be consistent — if you attribute one first-person quote
+  from someone, attribute ALL of their first-person quotes the same way.
+- Captures the full substance — disagreements, follow-ups, anecdotes — and pulls key lines into
+  quote blocks.
 
 Rules for both:
 - Preserve the video's order exactly. Never reorganize by theme.
@@ -87,11 +110,20 @@ Rules for both:
   restate ideas in your own words. Remove only filler, false starts, and obvious transcription
   errors (fix clear misrecognitions from context). The result should read like a lightly cleaned
   transcript, not a rewrite.
-- TIMESTAMPS COME FROM THE TRANSCRIPT: every transcript line is prefixed with its own [m:ss] (or
-  [h:mm:ss]) marker. Set each section's "timestamp_label" to the exact marker of the line where
-  that section starts, and set a block "timestamp" to the exact marker of the line it comes from.
-  COPY the marker verbatim — never invent, estimate, round, or reformat a time, and never put
-  brackets inside the value (just the digits, e.g. "5:03").
+- COMPLETE SENTENCES: YouTube captions are fed to you as short fragments, one per line, each with a
+  [m:ss] marker — these line breaks are arbitrary and often fall in the MIDDLE of a sentence. MERGE
+  consecutive fragments back into whole sentences, and group related sentences into natural
+  paragraphs. Every content block must be one or more COMPLETE sentences (a finished thought).
+  NEVER cut a sentence in half, and NEVER start a new block just because a new timestamp appeared.
+- TIMESTAMPS ARE SPARSE ANCHORS, NOT PER-LINE TAGS. They only help a reader jump to a spot in the
+  video; they must never fragment the writing. Rules:
+    • Set each section's "timestamp_label" to the transcript marker of the line where the section
+      starts.
+    • Within a section, add a block "timestamp" ONLY at a meaningful anchor — the start of a new
+      speaker's turn, or a standout quote — using the marker of that block's FIRST line. Most
+      paragraphs need no timestamp at all.
+    • COPY the marker verbatim from the transcript — never invent, estimate, round, or reformat a
+      time, and never put brackets inside the value (just the digits, e.g. "5:03").
 - Give every section the SAME depth of coverage — never thin out or rush later parts of the video;
   the last chunk deserves as much fidelity as the first.
 - A chunk may contain one topic (one section) or several (multiple sections). Split where the speaker
@@ -108,9 +140,9 @@ Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of 
       "content": [
         {
           "type": "paragraph" | "bullet" | "quote",
-          "text": "<the speaker's own words for this point/line/quote>",
-          "speaker": "<who said it — for a dialogue; omit for a monologue>",
-          "timestamp": "<the transcript marker of the line this comes from, e.g. 5:03; optional>"
+          "text": "<the speaker's own words as COMPLETE sentences — merge caption fragments, never cut mid-sentence>",
+          "speaker": "<who said it — only when the speaker changes; 'Narrator' for voiceover; omit for a monologue>",
+          "timestamp": "<optional anchor at the block's START, e.g. 5:03 — only for a new turn/notable quote, not every block>"
         }
       ]
     }
