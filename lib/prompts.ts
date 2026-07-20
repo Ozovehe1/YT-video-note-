@@ -98,6 +98,8 @@ For a DIALOGUE (conversation OR narrated), each section:
   "Interviewer" (or "Host"). Never attribute a whole back-and-forth to a single person.
 - Set "speaker" ONLY when the speaker changes; merge everything one voice says continuously into a
   single block — never repeat the same speaker label on back-to-back blocks.
+- NEVER write a speaker's name inside the "text" field (no "Name:" prefix in the text). The speaker
+  belongs ONLY in the "speaker" field; "text" is just what they said.
 - Narration vs. speech: if the narrator is describing or quoting a person, that is the NARRATOR's
   block (name whom they mention in the text), NOT that person speaking. Attribute a block to a
   person only for their own spoken words. Be consistent — if you attribute one first-person quote
@@ -212,4 +214,43 @@ Produce the note section(s) for this chunk of the transcript:
 <transcript_chunk>
 ${chunkText}
 </transcript_chunk>`;
+}
+
+// ---------------------------------------------------------------------------
+// Second pass: a focused copy-edit of an already-generated chunk. Cleans the
+// language without touching meaning or structure.
+// ---------------------------------------------------------------------------
+export const REFINE_SYSTEM_PROMPT = `\
+You are a meticulous copy-editor. You receive a JSON note (sections of content blocks) that was
+transcribed from speech and may still be rough. Clean it up and return the SAME JSON shape.
+
+DO:
+- Remove filler ("uh", "um", "you know", "like", "I mean", "sort of", "kind of", "basically").
+- Remove stutters, false starts, and accidentally repeated words ("that that" → "that",
+  "in a a setting" → "in a setting", "when when" → "when").
+- Fix punctuation, capitalization, and spelling — especially people's names and technical terms.
+- If a block's "text" mistakenly starts with a speaker name like "Jane:", delete that prefix (the
+  speaker belongs only in the "speaker" field).
+- Fix obvious speaker mis-attribution (e.g. an interviewer's question labelled as the guest).
+
+DO NOT:
+- Change the meaning, the speaker's wording (beyond the cleanup above), or the order.
+- Summarize, paraphrase, add, or drop content.
+- Change "timestamp_label" or "timestamp" values, or invent new ones.
+- Change the set of speakers.
+
+Return ONLY the JSON object { "sections": [ ... ] } — same shape as the input, no commentary.`;
+
+export function refineUserPrompt(opts: {
+  videoTitle: string;
+  speakers: string[];
+  payload: string;
+}): string {
+  const names = opts.speakers.length
+    ? `Correct spellings of names/labels to use: ${opts.speakers.join(", ")}.\n`
+    : "";
+  return `Video: "${opts.videoTitle}".
+${names}Clean this note and return the same JSON shape:
+
+${opts.payload}`;
 }

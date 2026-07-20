@@ -31,9 +31,10 @@ const THEMES: { key: ReaderTheme; label: string }[] = [
   { key: "contrast", label: "Contrast" },
 ];
 
-// Pacing for the reader's own generation loop (see below).
+// Pacing for the reader's own generation loop (see below). Default 15/min: each
+// chunk makes two model calls (draft + copy-edit), so ~30 requests/min.
 const DRIVE_RPM =
-  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 30;
+  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 15;
 const DRIVE_INTERVAL_MS = Math.ceil(60000 / DRIVE_RPM) + 500;
 const READER_NOTE_KEY = "verbatim:reader-note";
 const driveSleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

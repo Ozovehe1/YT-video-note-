@@ -3,8 +3,12 @@ import {
   chunkUserPrompt,
   CLASSIFY_SYSTEM_PROMPT,
   classifyUserPrompt,
+  REFINE_SYSTEM_PROMPT,
+  refineUserPrompt,
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
+
+type Section = GeneratedChunk["sections"][number];
 
 // ---------------------------------------------------------------------------
 // LLM backend: NVIDIA's OpenAI-compatible API, called directly with fetch.
@@ -165,6 +169,7 @@ async function chat(opts: {
   user: string;
   maxTokens: number;
   timeoutMs?: number;
+  temperature?: number;
 }): Promise<{ text: string; finishReason: string | null; model: string }> {
   const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
   let lastErr: unknown;
@@ -379,16 +384,11 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
 
   const parsed = parseJsonObject<GeneratedChunk>(text);
 
-  // Defensive shaping — the model follows the prompt shape, but never trust it
-  // blindly: coerce to the structure the rest of the app relies on.
-  if (!Array.isArray(parsed.sections)) parsed.sections = [];
+  // Defensive shaping + deterministic cleanup (strip stray "Name:" prefixes, merge
+  // same-speaker paragraphs, drop filler/stutters) — never trust the model blindly.
   if (!Array.isArray(parsed.speakers)) parsed.speakers = [];
-  parsed.sections = parsed.sections
-    .filter((s) => s && Array.isArray(s.content))
-    .map((s) => ({
-      ...s,
-      content: s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock),
-    }));
+  const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
+  parsed.sections = shapeSections(parsed.sections, speakers);
 
   return {
     parsed,
@@ -399,9 +399,13 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   };
 }
 
-/** Generate the note section(s) for one transcript chunk as structured blocks. */
+/** Generate the note section(s) for one transcript chunk — draft, then a copy-edit second pass. */
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
-  return (await runChunk(opts)).parsed;
+  const { parsed } = await runChunk(opts);
+  const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
+  const refined = await refineSections(parsed.sections, opts.videoTitle, speakers);
+  if (refined) parsed.sections = refined;
+  return parsed;
 }
 
 /** Same call as generateChunk, but returns the raw metadata for /api/diag. */
@@ -448,14 +452,104 @@ export async function generationSelfTest(): Promise<{
   };
 }
 
-function sanitizeBlock(b: NoteBlock): NoteBlock {
-  const out: NoteBlock = {
-    type: b.type,
-    text: b.text,
-  } as NoteBlock;
+// --- Deterministic cleanup: the structural fixes a copy-edit model still misses. ---
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Immediate-duplicate words we can safely collapse ("a a" → "a"). Excludes words
+// where a real double is valid ("that", "this", "had", "is").
+const SAFE_DUP = new Set([
+  "a", "the", "and", "to", "of", "in", "on", "when", "so", "it", "i", "you", "we", "um", "uh",
+]);
+
+/** Clean one block's text: drop a stray "Name:" prefix, filler, and stutters; tidy spacing. */
+function cleanText(text: string, speakers: string[]): string {
+  let t = typeof text === "string" ? text : "";
+
+  // Strip a leading speaker prefix the model wrongly put in the text (repeat for doubles).
+  const names = speakers.filter(Boolean).map(escapeRegExp);
+  if (names.length) {
+    const re = new RegExp(`^\\s*(?:${names.join("|")})\\s*:\\s*`, "i");
+    let prev: string;
+    do {
+      prev = t;
+      t = t.replace(re, "");
+    } while (t !== prev);
+  }
+
+  // Remove standalone filler tokens ("um"/"uh" are never real words).
+  t = t.replace(/\b(?:um|uh)\b[,]?/gi, " ");
+  // Collapse immediate exact duplicate words, but only the safe set.
+  t = t.replace(/\b(\w+)(\s+\1\b)+/gi, (m, w: string) => (SAFE_DUP.has(w.toLowerCase()) ? w : m));
+  // Tidy: collapse spaces, remove space before punctuation, strip leading punctuation/space.
+  t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").replace(/^[\s,]+/, "").trim();
+  if (t) t = t[0].toUpperCase() + t.slice(1);
+  return t;
+}
+
+/** Merge back-to-back paragraph blocks from the same speaker into one (keeps the first timestamp). */
+function mergeParagraphs(content: NoteBlock[]): NoteBlock[] {
+  const out: NoteBlock[] = [];
+  for (const b of content) {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      last.type === "paragraph" &&
+      b.type === "paragraph" &&
+      (last.speaker ?? "") === (b.speaker ?? "")
+    ) {
+      last.text = `${last.text} ${b.text}`.replace(/\s{2,}/g, " ").trim();
+      continue;
+    }
+    out.push({ ...b });
+  }
+  return out;
+}
+
+function sanitizeBlock(b: NoteBlock, speakers: string[]): NoteBlock {
+  const out: NoteBlock = { type: b.type, text: cleanText(b.text, speakers) } as NoteBlock;
   if (b.speaker) out.speaker = b.speaker;
   if (b.timestamp) out.timestamp = b.timestamp;
-
   return out;
+}
+
+/** Shape + clean raw model sections into the structure the app relies on. */
+function shapeSections(raw: unknown, speakers: string[]): Section[] {
+  const list = Array.isArray(raw) ? (raw as Section[]) : [];
+  return list
+    .filter((s) => s && Array.isArray(s.content))
+    .map((s) => {
+      let content = s.content
+        .filter((b) => b && typeof b.text === "string")
+        .map((b) => sanitizeBlock(b, speakers))
+        .filter((b) => b.text.length > 0);
+      content = mergeParagraphs(content);
+      return { ...s, content };
+    })
+    .filter((s) => s.content.length > 0);
+}
+
+/**
+ * Second pass: hand the just-generated sections to a copy-editor model to remove
+ * remaining filler/stutters, fix names, and correct obvious mis-attribution.
+ * Best-effort — returns null on any failure so the caller keeps the draft.
+ */
+async function refineSections(sections: Section[], title: string, speakers: string[]): Promise<Section[] | null> {
+  if (!sections.length) return null;
+  try {
+    const { text } = await chat({
+      system: REFINE_SYSTEM_PROMPT,
+      user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify({ sections }) }),
+      maxTokens: 4000,
+      timeoutMs: 22000,
+      temperature: 0.2,
+    });
+    const parsed = parseJsonObject<{ sections?: unknown }>(text);
+    const shaped = shapeSections(parsed.sections, speakers);
+    return shaped.length ? shaped : null;
+  } catch {
+    return null; // never let the cleanup pass block a note
+  }
 }
