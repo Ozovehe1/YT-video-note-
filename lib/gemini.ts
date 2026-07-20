@@ -7,8 +7,11 @@ import {
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
+// Note generation runs on flash-lite: a separate free-tier quota bucket and a
+// higher per-minute limit than flash, so notes keep generating reliably. Set the
+// GEMINI_MODEL env var to override (e.g. "gemini-2.5-flash" for higher quality).
 export const MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 // Classification is a small, easy task, so run it on flash-lite. flash-lite has
 // its own separate free-tier quota bucket and a higher per-minute limit, so this

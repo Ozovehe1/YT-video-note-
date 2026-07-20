@@ -21,7 +21,7 @@ import { useRouter } from "next/navigation";
  * cap, and 429s back off. After each chunk it calls router.refresh() so whatever
  * page is open (the reader, the library) updates.
  */
-const RPM = Number(process.env.NEXT_PUBLIC_GEMINI_RPM) || 5;
+const RPM = Number(process.env.NEXT_PUBLIC_GEMINI_RPM) || 10;
 const MIN_INTERVAL_MS = Math.ceil(60000 / RPM) + 1000;
 const POLL_MS = 20000;
 const LEADER_KEY = "verbatim:gen-leader";
