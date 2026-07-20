@@ -83,6 +83,7 @@ async function callOnce(opts: {
   system: string;
   user: string;
   maxTokens: number;
+  timeoutMs?: number;
 }): Promise<{ text: string; finishReason: string | null }> {
   if (!process.env.NVIDIA_API_KEY) throw new Error("NVIDIA_API_KEY is not set.");
 
@@ -102,7 +103,9 @@ async function callOnce(opts: {
   if (/deepseek/i.test(opts.model)) body.chat_template_kwargs = { thinking: false };
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 55000); // stay within the ~60s serverless ceiling
+  // Bound each call well under Vercel's hard 60s ceiling so a slow model can't
+  // blow the request budget (and so the driver can retry cleanly instead).
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 40000);
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}/chat/completions`, {
@@ -148,6 +151,7 @@ async function chat(opts: {
   system: string;
   user: string;
   maxTokens: number;
+  timeoutMs?: number;
 }): Promise<{ text: string; finishReason: string | null; model: string }> {
   const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
   let lastErr: unknown;
@@ -217,22 +221,27 @@ export async function llmRawProbes(): Promise<
   const user = [{ role: "user", content: 'Reply with exactly {"ok":true}' }];
 
   async function probe(model: string) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000); // short: keep the diagnostic snappy
     try {
       const res = await fetch(`${BASE_URL}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({ model, messages: user, max_tokens: 64, stream: false }),
+        signal: ctrl.signal,
       });
       const text = await res.text();
       return { model, status: res.status, ok: res.ok, detail: text.slice(0, 300) };
     } catch (e) {
       return { model, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  const out = [];
-  for (const m of PROBE_MODELS) out.push(await probe(m)); // sequential: stay under the rate cap
-  return out;
+  // Parallel so six probes cost ~one timeout, not six — the whole diagnostic must
+  // finish well inside the serverless limit.
+  return Promise.all(PROBE_MODELS.map(probe));
 }
 
 /** One minimal round-trip, used by /api/diag to surface the real runtime status. */
@@ -240,13 +249,16 @@ export async function llmSelfTest(): Promise<{
   model: string;
   text: string | null;
   finishReason: string | null;
+  elapsedMs: number;
 }> {
+  const started = Date.now();
   const { text, finishReason, model } = await chat({
     system: "You output only JSON.",
     user: 'Reply with exactly this JSON and nothing else: {"ok":true}',
     maxTokens: 100,
+    timeoutMs: 12000, // a health ping must be quick — don't let it hang the diagnostic
   });
-  return { model, text: text || null, finishReason };
+  return { model, text: text || null, finishReason, elapsedMs: Date.now() - started };
 }
 
 /**
@@ -331,7 +343,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
     ({ text, finishReason, model } = await chat({
       system: SYSTEM_PROMPT,
       user: chunkUserPrompt({ ...opts, isFirst }),
-      maxTokens: 8192,
+      maxTokens: 4000, // smaller = the call returns fast enough to fit the 60s limit
     }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
