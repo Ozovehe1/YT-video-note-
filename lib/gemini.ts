@@ -10,6 +10,12 @@ import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 export const MODEL =
   process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
+// Classification is a small, easy task, so run it on flash-lite. flash-lite has
+// its own separate free-tier quota bucket and a higher per-minute limit, so this
+// keeps classification from ever competing with note generation for the same quota.
+export const CLASSIFY_MODEL =
+  process.env.GEMINI_CLASSIFY_MODEL || "gemini-2.5-flash-lite";
+
 /** Thrown when Gemini returns 429 RESOURCE_EXHAUSTED, carrying its suggested wait. */
 export class RateLimitError extends Error {
   retryAfterSec: number;
@@ -134,7 +140,7 @@ export async function classifyVideo(opts: {
   let response;
   try {
     response = await gemini().models.generateContent({
-      model: MODEL,
+      model: CLASSIFY_MODEL,
       contents: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
       config: {
         systemInstruction: CLASSIFY_SYSTEM_PROMPT,
