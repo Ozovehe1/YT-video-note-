@@ -83,7 +83,8 @@ For a MONOLOGUE, each section:
 - Renders the speaker's COMPLETE words as prose paragraphs, in order — nothing summarized or dropped.
 
 For a DIALOGUE (conversation OR narrated), each section:
-- Groups the material by the topic being discussed, with a heading and starting timestamp.
+- Divides the conversation into sections IN THE ORDER it happens — start a new section when the
+  topic shifts, with a heading and starting timestamp. Never cluster or reorder by theme.
 - Identifies each voice and attributes blocks via the "speaker" field: use "Narrator" for voiceover
   storytelling, and a person's real name for their own first-person words (use the names given in
   context; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2"). Since transcripts are unlabeled,
@@ -94,8 +95,10 @@ For a DIALOGUE (conversation OR narrated), each section:
   the longer answers. Assign each question to the interviewer and each answer to the guest, and
   switch the label every time the turn changes. If only the guest is named, label the questioner
   "Interviewer" (or "Host"). Never attribute a whole back-and-forth to a single person.
-- Set "speaker" ONLY when the speaker changes; merge everything one voice says continuously into a
-  single block — never repeat the same speaker label on back-to-back blocks.
+- Break a speaker's long turn into natural, readable paragraphs — each a complete thought with its
+  own timestamp — all attributed to that same speaker. Do NOT cram a whole turn into one giant
+  block. (The label is shown once per turn automatically, so it's fine to repeat the same speaker on
+  consecutive blocks.)
 - NEVER write a speaker's name inside the "text" field (no "Name:" prefix in the text). The speaker
   belongs ONLY in the "speaker" field; "text" is just what they said.
 - ATTRIBUTE EVERY BLOCK. In a dialogue, every block MUST have a "speaker" — and the FIRST block of
@@ -104,10 +107,10 @@ For a DIALOGUE (conversation OR narrated), each section:
 - The speaker of a block is WHOEVER IS TALKING AT THAT BLOCK'S TIMESTAMP in the transcript. Never
   put one person's words under another's name; when the turn changes at a timestamp, change the
   speaker there.
-- Narration vs. speech: if the narrator is describing or quoting a person, that is the NARRATOR's
-  block (name whom they mention in the text), NOT that person speaking. Attribute a block to a
-  person only for their own spoken words. Be consistent — if you attribute one first-person quote
-  from someone, attribute ALL of their first-person quotes the same way.
+- Narration vs. speech: if the narrator is describing or quoting a person, that stays the NARRATOR's
+  block, in the narrator's own words (don't add or invent anything), NOT that person speaking.
+  Attribute a block to a person only for their own spoken words. Be consistent — if you attribute one
+  first-person quote from someone, attribute ALL of their first-person quotes the same way.
 - Renders each speaker's COMPLETE words as prose paragraphs — the full back-and-forth, nothing
   summarized or dropped.
 
