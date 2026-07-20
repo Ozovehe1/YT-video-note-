@@ -20,6 +20,16 @@ export class RateLimitError extends Error {
   }
 }
 
+/** Thrown when the model returns no usable text (e.g. finishReason MAX_TOKENS with empty output). */
+export class EmptyOutputError extends Error {
+  finishReason: string | null;
+  constructor(finishReason: string | null) {
+    super(`Gemini returned no usable content (finishReason: ${finishReason ?? "unknown"}).`);
+    this.name = "EmptyOutputError";
+    this.finishReason = finishReason;
+  }
+}
+
 function isRateLimit(err: unknown): boolean {
   const e = err as { status?: unknown; code?: unknown; message?: unknown };
   const s = String(e?.message ?? err ?? "");
@@ -164,10 +174,20 @@ interface GenerateOpts {
   chunkText: string;
 }
 
-/** Generate the note section(s) for one transcript chunk as structured blocks. */
-export async function generateChunk(
-  opts: GenerateOpts,
-): Promise<GeneratedChunk> {
+/** What one chunk call actually returned — used for both the real path and diagnostics. */
+export interface ChunkResult {
+  parsed: GeneratedChunk;
+  finishReason: string | null;
+  rawTextLength: number;
+  rawTextPreview: string;
+}
+
+/**
+ * Core chunk call. Returns the parsed note plus the raw metadata (finishReason,
+ * text length/preview) so the diagnostic endpoint can see exactly what came back.
+ * Throws RateLimitError on 429 and EmptyOutputError when the reply has no usable text.
+ */
+async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   const isFirst = opts.chunkIndex === 0;
 
   let response;
@@ -178,11 +198,11 @@ export async function generateChunk(
       config: {
         systemInstruction: SYSTEM_PROMPT,
         responseMimeType: "application/json",
-        // Give the whole budget to the note. gemini-2.5-flash "thinks" by default;
-        // on a dense chunk that thinking can eat the entire output budget and
-        // return empty/truncated text — the intermittent "froze mid-note" bug.
-        // Disable thinking and cap output so every chunk returns a complete note.
-        maxOutputTokens: 8192,
+        // Give the note plenty of room. gemini-2.5-flash "thinks" by default; on a
+        // big chunk that thinking can consume the output budget and return empty
+        // text — the "writes nothing" bug. Disable thinking and raise the ceiling
+        // (the model supports up to 65536 output tokens) so a full note always fits.
+        maxOutputTokens: 32768,
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
@@ -195,10 +215,14 @@ export async function generateChunk(
     throw err;
   }
 
+  const finishReason = response.candidates?.[0]?.finishReason ?? null;
   const text = response.text;
 
   if (!text) {
-    throw new Error("No note content was returned for this chunk.");
+    console.error(
+      `[generateChunk] empty reply (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}, finishReason ${finishReason}).`,
+    );
+    throw new EmptyOutputError(finishReason);
   }
 
   const parsed = parseJsonObject<GeneratedChunk>(text);
@@ -214,7 +238,22 @@ export async function generateChunk(
       content: s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock),
     }));
 
-  return parsed;
+  return {
+    parsed,
+    finishReason,
+    rawTextLength: text.length,
+    rawTextPreview: text.slice(0, 400),
+  };
+}
+
+/** Generate the note section(s) for one transcript chunk as structured blocks. */
+export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
+  return (await runChunk(opts)).parsed;
+}
+
+/** Same call as generateChunk, but returns the raw metadata for /api/diag. */
+export async function generateChunkDebug(opts: GenerateOpts): Promise<ChunkResult> {
+  return runChunk(opts);
 }
 
 function sanitizeBlock(b: NoteBlock): NoteBlock {
