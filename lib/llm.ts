@@ -13,7 +13,7 @@ import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 // Everything is overridable by env var so the model/endpoint can change without
 // touching code.
 // ---------------------------------------------------------------------------
-const BASE_URL = process.env.LLM_BASE_URL || "https://integrate.api.nvidia.com/v1";
+export const BASE_URL = process.env.LLM_BASE_URL || "https://integrate.api.nvidia.com/v1";
 export const MODEL = process.env.LLM_MODEL || "deepseek-ai/deepseek-v4-pro";
 // Classification is a small task; reuse the same model by default.
 export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
@@ -115,6 +115,56 @@ function parseJsonObject<T>(text: string): T {
     }
     throw new Error("Model reply was not valid JSON.");
   }
+}
+
+/**
+ * Send progressively richer requests straight to the provider (bypassing the SDK,
+ * which hides the error body behind "400 no body") and report each one's raw
+ * status + response text. This pinpoints exactly which parameter the provider
+ * rejects — the base call, the thinking kwarg, or the full param set.
+ */
+export async function llmRawProbes(): Promise<
+  Array<{ label: string; status?: number; body?: string; error?: string }>
+> {
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${process.env.NVIDIA_API_KEY ?? ""}`,
+  };
+  const user = [{ role: "user", content: 'Reply with exactly {"ok":true}' }];
+
+  async function probe(label: string, body: unknown) {
+    try {
+      const res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      return { label, status: res.status, body: text.slice(0, 500) };
+    } catch (e) {
+      return { label, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+    }
+  }
+
+  return [
+    await probe("minimal", { model: MODEL, messages: user, max_tokens: 100, stream: false }),
+    await probe("thinking_off", {
+      model: MODEL,
+      messages: user,
+      max_tokens: 100,
+      stream: false,
+      chat_template_kwargs: { thinking: false },
+    }),
+    await probe("full", {
+      model: MODEL,
+      messages: [{ role: "system", content: "You output only JSON." }, ...user],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 100,
+      stream: false,
+      chat_template_kwargs: { thinking: false },
+    }),
+  ];
 }
 
 /** One minimal round-trip, used by /api/diag to surface the real runtime status. */

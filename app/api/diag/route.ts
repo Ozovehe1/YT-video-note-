@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { llmSelfTest, generateChunkDebug } from "@/lib/llm";
+import { llmSelfTest, llmRawProbes, generateChunkDebug } from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -50,6 +50,17 @@ export async function GET(request: Request) {
     };
   }
 
+  // If the model call fails, probe the provider directly to surface the raw 400
+  // reason (and which parameter triggers it) that the SDK hides.
+  let probes: Awaited<ReturnType<typeof llmRawProbes>> | undefined;
+  if (!model.ok) {
+    try {
+      probes = await llmRawProbes();
+    } catch {
+      /* ignore */
+    }
+  }
+
   // Optional: exercise the REAL chunk generation for a specific note.
   const noteId = new URL(request.url).searchParams.get("noteId");
   let chunk: Record<string, unknown> | undefined;
@@ -57,7 +68,13 @@ export async function GET(request: Request) {
     chunk = await diagnoseChunk(supabase, noteId);
   }
 
-  return NextResponse.json({ commit, env, model, ...(chunk ? { chunk } : {}) });
+  return NextResponse.json({
+    commit,
+    env,
+    model,
+    ...(probes ? { probes } : {}),
+    ...(chunk ? { chunk } : {}),
+  });
 }
 
 async function diagnoseChunk(
