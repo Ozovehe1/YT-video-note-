@@ -1,5 +1,3 @@
-import OpenAI from "openai";
-import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import {
   SYSTEM_PROMPT,
   chunkUserPrompt,
@@ -9,13 +7,28 @@ import {
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
 // ---------------------------------------------------------------------------
-// LLM backend: DeepSeek v4 Pro via NVIDIA's OpenAI-compatible API.
-// Everything is overridable by env var so the model/endpoint can change without
-// touching code.
+// LLM backend: NVIDIA's OpenAI-compatible API, called directly with fetch.
+//
+// Any single hosted model can go DEGRADED on the provider's side (as
+// deepseek-v4-pro did). So generation runs against an ORDERED LIST of models and
+// automatically uses the first healthy one — an outage self-heals with no action
+// needed. Everything is overridable by env var.
 // ---------------------------------------------------------------------------
 export const BASE_URL = process.env.LLM_BASE_URL || "https://integrate.api.nvidia.com/v1";
-export const MODEL = process.env.LLM_MODEL || "deepseek-ai/deepseek-v4-pro";
-// Classification is a small task; reuse the same model by default.
+export const MODEL = process.env.LLM_MODEL || "meta/llama-3.3-70b-instruct";
+
+const FALLBACK_MODELS = (
+  process.env.LLM_FALLBACK_MODELS ||
+  "deepseek-ai/deepseek-v4-flash,meta/llama-3.1-8b-instruct,deepseek-ai/deepseek-v4-pro"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/** The models we try, in order — the primary first, then fallbacks. Deduped. */
+export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
+
+// Kept for backward-compat / diagnostics; classification uses the same fallback list.
 export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
 
 /** Thrown when the provider returns 429, carrying its suggested wait. */
@@ -28,7 +41,7 @@ export class RateLimitError extends Error {
   }
 }
 
-/** Thrown when the model returns no usable text (e.g. finish_reason "length" with empty output). */
+/** Thrown when the model returns no usable text (e.g. empty content). */
 export class EmptyOutputError extends Error {
   finishReason: string | null;
   constructor(finishReason: string | null) {
@@ -38,48 +51,42 @@ export class EmptyOutputError extends Error {
   }
 }
 
-function isRateLimit(err: unknown): boolean {
-  const e = err as { status?: unknown; code?: unknown };
-  return e?.status === 429 || e?.code === 429;
-}
-
-function parseRetrySec(err: unknown): number {
-  const e = err as { headers?: Record<string, string> };
-  const ra = e?.headers?.["retry-after"];
-  const n = ra ? Number(ra) : NaN;
-  // Fall back to a safe window when no Retry-After header is present.
-  return Number.isFinite(n) ? n + 1 : 15;
-}
-
-let client: OpenAI | null = null;
-
-function llm(): OpenAI {
-  if (!process.env.NVIDIA_API_KEY) {
-    throw new Error("NVIDIA_API_KEY is not set.");
+/** A non-OK HTTP response from the provider, with the raw status + body for triage. */
+class ProviderError extends Error {
+  status: number;
+  body: string;
+  retryAfter?: number;
+  constructor(status: number, body: string, retryAfter?: number) {
+    super(`Provider returned ${status}: ${body.slice(0, 200)}`);
+    this.name = "ProviderError";
+    this.status = status;
+    this.body = body;
+    this.retryAfter = retryAfter;
   }
-  client ??= new OpenAI({
-    apiKey: process.env.NVIDIA_API_KEY,
-    baseURL: BASE_URL,
-    // We do our own paced retries at the app level, and each serverless call has
-    // a ~60s ceiling — so don't let the SDK add its own retries/long timeout.
-    maxRetries: 0,
-    timeout: 55000,
-  });
-  return client;
 }
 
-/**
- * One chat completion. `chat_template_kwargs.thinking:false` disables DeepSeek's
- * chain-of-thought so the whole budget goes to the answer (and the reply is
- * plain JSON, not reasoning). Returns the text plus finish_reason.
- */
-async function chat(opts: {
+/** A model that's down/unknown (as opposed to a real bad request) — try the next one. */
+function isModelUnavailable(err: unknown): boolean {
+  if (!(err instanceof ProviderError)) return false;
+  if (err.status >= 500 || err.status === 404) return true;
+  return (
+    err.status === 400 &&
+    /DEGRADED|cannot be invoked|not found|does not exist|unknown model|not a valid model|no healthy/i.test(
+      err.body,
+    )
+  );
+}
+
+/** One raw call to a single model. Throws ProviderError on a non-OK response. */
+async function callOnce(opts: {
   model: string;
   system: string;
   user: string;
   maxTokens: number;
 }): Promise<{ text: string; finishReason: string | null }> {
-  const body = {
+  if (!process.env.NVIDIA_API_KEY) throw new Error("NVIDIA_API_KEY is not set.");
+
+  const body: Record<string, unknown> = {
     model: opts.model,
     messages: [
       { role: "system", content: opts.system },
@@ -89,13 +96,80 @@ async function chat(opts: {
     top_p: 0.95,
     max_tokens: opts.maxTokens,
     stream: false,
-    // NVIDIA/vLLM extra: turn off DeepSeek "thinking" so output is the answer only.
-    chat_template_kwargs: { thinking: false },
-  } as unknown as ChatCompletionCreateParamsNonStreaming;
+  };
+  // DeepSeek reasoning models need this to keep chain-of-thought out of the answer.
+  // Other model families may reject the unknown field, so only send it to DeepSeek.
+  if (/deepseek/i.test(opts.model)) body.chat_template_kwargs = { thinking: false };
 
-  const completion = await llm().chat.completions.create(body);
-  const choice = completion.choices?.[0];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 55000); // stay within the ~60s serverless ceiling
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.NVIDIA_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const raw = await res.text();
+  if (!res.ok) {
+    const ra = Number(res.headers.get("retry-after"));
+    throw new ProviderError(res.status, raw, Number.isFinite(ra) ? ra : undefined);
+  }
+
+  let json: { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> };
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new ProviderError(res.status, raw);
+  }
+  const choice = json.choices?.[0];
   return { text: choice?.message?.content ?? "", finishReason: choice?.finish_reason ?? null };
+}
+
+// Remember the model that last worked, so subsequent calls start there instead of
+// re-hitting a known-dead model every time.
+let activeIndex = 0;
+
+/**
+ * One chat completion with automatic model fallback. Tries models in order
+ * (starting from the last known-good one); skips any that are DEGRADED/unavailable
+ * and moves on. Throws RateLimitError on 429 (the driver paces around that) and
+ * surfaces a real bad-request error rather than looping.
+ */
+async function chat(opts: {
+  system: string;
+  user: string;
+  maxTokens: number;
+}): Promise<{ text: string; finishReason: string | null; model: string }> {
+  const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
+  let lastErr: unknown;
+
+  for (const model of order) {
+    try {
+      const r = await callOnce({ model, ...opts });
+      activeIndex = MODELS.indexOf(model); // this one works — prefer it next time
+      return { ...r, model };
+    } catch (err) {
+      if (err instanceof ProviderError && err.status === 429) {
+        throw new RateLimitError(err.retryAfter ?? 15);
+      }
+      if (isModelUnavailable(err)) {
+        lastErr = err;
+        console.warn(`[llm] model ${model} unavailable, trying next:`, (err as Error).message);
+        continue;
+      }
+      throw err; // a real error (bad request, timeout, network) — don't mask it
+    }
+  }
+  throw lastErr ?? new Error("All candidate models are unavailable.");
 }
 
 /**
@@ -117,29 +191,21 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
-// Candidate models to health-check when the primary is down. The current MODEL
-// is always tested first; the rest are common, usually-healthy NVIDIA models to
-// fall back to. Override the probe list with LLM_PROBE_MODELS (comma-separated).
+// Candidate models the diagnostic health-checks. Includes the fallback list plus a
+// couple extras. Override with LLM_PROBE_MODELS (comma-separated).
 const PROBE_MODELS = (
   process.env.LLM_PROBE_MODELS ||
-  [
-    MODEL,
-    "deepseek-ai/deepseek-v4-flash",
-    "deepseek-ai/deepseek-r1",
-    "meta/llama-3.3-70b-instruct",
-    "meta/llama-3.1-8b-instruct",
-    "qwen/qwen2.5-7b-instruct",
-  ].join(",")
+  Array.from(
+    new Set([...MODELS, "deepseek-ai/deepseek-r1", "qwen/qwen2.5-7b-instruct"]),
+  ).join(",")
 )
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
 
 /**
- * Health-check each candidate model with one minimal request straight to the
- * provider (bypassing the SDK, which hides the error body). Reveals which models
- * are actually up (`ok:true`) vs DEGRADED/unavailable — so we can point MODEL at
- * a healthy one instead of guessing.
+ * Health-check each candidate model with one minimal request. Reveals which models
+ * are up (`ok:true`) vs DEGRADED/unavailable — used by /api/diag when something's off.
  */
 export async function llmRawProbes(): Promise<
   Array<{ model: string; status?: number; ok?: boolean; detail?: string; error?: string }>
@@ -164,9 +230,8 @@ export async function llmRawProbes(): Promise<
     }
   }
 
-  // Sequential to stay well under the per-minute rate limit.
   const out = [];
-  for (const m of PROBE_MODELS) out.push(await probe(m));
+  for (const m of PROBE_MODELS) out.push(await probe(m)); // sequential: stay under the rate cap
   return out;
 }
 
@@ -176,18 +241,12 @@ export async function llmSelfTest(): Promise<{
   text: string | null;
   finishReason: string | null;
 }> {
-  try {
-    const { text, finishReason } = await chat({
-      model: MODEL,
-      system: "You output only JSON.",
-      user: 'Reply with exactly this JSON and nothing else: {"ok":true}',
-      maxTokens: 100,
-    });
-    return { model: MODEL, text: text || null, finishReason };
-  } catch (err) {
-    if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
-    throw err;
-  }
+  const { text, finishReason, model } = await chat({
+    system: "You output only JSON.",
+    user: 'Reply with exactly this JSON and nothing else: {"ok":true}',
+    maxTokens: 100,
+  });
+  return { model, text: text || null, finishReason };
 }
 
 /**
@@ -216,13 +275,12 @@ export async function classifyVideo(opts: {
   let text: string;
   try {
     ({ text } = await chat({
-      model: CLASSIFY_MODEL,
       system: CLASSIFY_SYSTEM_PROMPT,
       user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
       maxTokens: 2048,
     }));
   } catch (err) {
-    if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    if (err instanceof RateLimitError) throw err;
     console.error("[classifyVideo] LLM call failed:", err);
     throw err;
   }
@@ -254,27 +312,29 @@ export interface ChunkResult {
   finishReason: string | null;
   rawTextLength: number;
   rawTextPreview: string;
+  model: string;
 }
 
 /**
  * Core chunk call. Returns the parsed note plus raw metadata (finish_reason,
- * text length/preview) so the diagnostic endpoint can see exactly what came back.
- * Throws RateLimitError on 429 and EmptyOutputError when the reply has no usable text.
+ * text length/preview, which model served) so the diagnostic endpoint can see
+ * exactly what came back. Throws RateLimitError on 429 and EmptyOutputError when
+ * the reply has no usable text.
  */
 async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   const isFirst = opts.chunkIndex === 0;
 
   let text: string;
   let finishReason: string | null;
+  let model: string;
   try {
-    ({ text, finishReason } = await chat({
-      model: MODEL,
+    ({ text, finishReason, model } = await chat({
       system: SYSTEM_PROMPT,
       user: chunkUserPrompt({ ...opts, isFirst }),
-      maxTokens: 16384,
+      maxTokens: 8192,
     }));
   } catch (err) {
-    if (isRateLimit(err)) throw new RateLimitError(parseRetrySec(err));
+    if (err instanceof RateLimitError) throw err;
     console.error(
       `[generateChunk] LLM call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
       err,
@@ -307,6 +367,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
     finishReason,
     rawTextLength: text.length,
     rawTextPreview: text.slice(0, 400),
+    model,
   };
 }
 

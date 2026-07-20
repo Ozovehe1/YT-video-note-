@@ -8,7 +8,7 @@ timestamped transcript, detects whether it's a **monologue** or a **dialogue**, 
 complete note that mirrors the video's own structure — in order, nothing summarized away. Longer
 video → longer read.
 
-Built with **Next.js** (App Router) + **DeepSeek v4 Pro** (via NVIDIA) + **Supabase**, deployable free on **Vercel**.
+Built with **Next.js** (App Router) + **NVIDIA-hosted LLMs** (Llama / DeepSeek) + **Supabase**, deployable free on **Vercel**.
 
 ---
 
@@ -31,8 +31,8 @@ Built with **Next.js** (App Router) + **DeepSeek v4 Pro** (via NVIDIA) + **Supab
 Next.js on Vercel
   ├─ YouTube Data API   → search by title + video metadata      (lib/youtube.ts)
   ├─ Supadata           → timestamped transcript (works on Vercel IPs)  (lib/supadata.ts)
-  ├─ DeepSeek v4 Pro    → chunked note generation → structured blocks   (lib/llm.ts)
-  │    (via NVIDIA's OpenAI-compatible API)
+  ├─ NVIDIA LLM API     → chunked note generation → structured blocks   (lib/llm.ts)
+  │    (OpenAI-compatible; auto model fallback across a list)
   └─ Supabase           → Postgres (notes, sections, progress) + Auth, all RLS-protected
 ```
 
@@ -72,13 +72,18 @@ cp .env.example .env.local   # then fill in your keys
 
 ```
 NVIDIA_API_KEY=nvapi-...
-LLM_MODEL=deepseek-ai/deepseek-v4-pro
+LLM_MODEL=meta/llama-3.3-70b-instruct
+LLM_FALLBACK_MODELS=deepseek-ai/deepseek-v4-flash,meta/llama-3.1-8b-instruct,deepseek-ai/deepseek-v4-pro
 LLM_BASE_URL=https://integrate.api.nvidia.com/v1
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...
 SUPADATA_API_KEY=sd_...
 YOUTUBE_API_KEY=AIza...
 ```
+
+Note generation tries `LLM_MODEL` first, then each model in `LLM_FALLBACK_MODELS`,
+and automatically uses the first one that's healthy — so if a hosted model goes
+down on the provider's side, notes keep generating with no change needed.
 
 ### 4. Run
 

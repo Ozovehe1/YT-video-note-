@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { chunkTranscript } from "@/lib/chunk";
-import { llmSelfTest, llmRawProbes, generateChunkDebug } from "@/lib/llm";
+import { llmSelfTest, llmRawProbes, generateChunkDebug, MODELS } from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -33,7 +33,7 @@ export async function GET(request: Request) {
 
   const env = {
     NVIDIA_API_KEY: Boolean(process.env.NVIDIA_API_KEY),
-    LLM_MODEL: process.env.LLM_MODEL || "(default) deepseek-ai/deepseek-v4-pro",
+    models: MODELS, // tried in order, first healthy one wins
     LLM_BASE_URL: process.env.LLM_BASE_URL || "(default) https://integrate.api.nvidia.com/v1",
     SUPADATA_API_KEY: Boolean(process.env.SUPADATA_API_KEY),
     YOUTUBE_API_KEY: Boolean(process.env.YOUTUBE_API_KEY),
