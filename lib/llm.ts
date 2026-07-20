@@ -460,6 +460,51 @@ export async function generationSelfTest(): Promise<{
   };
 }
 
+/**
+ * Exercises the FULL two-pass path (draft + copy-edit) on a built-in sample and
+ * times each pass separately — so /api/diag can confirm the second pass actually
+ * runs and fits the serverless budget (or is silently timing out).
+ */
+export async function generationSelfTestFull(): Promise<{
+  model: string;
+  sectionsReturned: number;
+  draftMs: number;
+  refineMs: number;
+  refineRan: boolean;
+}> {
+  const sample = [
+    "[00:00] So welcome everyone to the show, I'm really glad you could join us today.",
+    "[00:06] Thanks for having me, it's great to be here and I'm excited to dig in.",
+    "[00:12] Let's start at the beginning — how did you first get into this field?",
+    "[00:18] Well, honestly it was kind of an accident, I stumbled into it in college.",
+  ].join("\n");
+
+  const t0 = Date.now();
+  const res = await runChunk({
+    chunkIndex: 0,
+    chunkTotal: 1,
+    videoTitle: "Diagnostic sample",
+    channel: "",
+    videoType: "dialogue",
+    speakers: ["Host", "Guest"],
+    previousHeading: null,
+    chunkText: sample,
+  });
+  const draftMs = Date.now() - t0;
+
+  const t1 = Date.now();
+  const refineRan = await refineTexts(res.parsed.sections, "Diagnostic sample", ["Host", "Guest"]);
+  const refineMs = Date.now() - t1;
+
+  return {
+    model: res.model,
+    sectionsReturned: res.parsed.sections.length,
+    draftMs,
+    refineMs,
+    refineRan,
+  };
+}
+
 // --- Deterministic cleanup: the structural fixes a copy-edit model still misses. ---
 
 function escapeRegExp(s: string): string {
@@ -572,10 +617,10 @@ function backfillSectionTimestamps(sections: Section[]): void {
  * can never drop or change a timestamp, speaker, or the structure (the source of
  * page-to-page inconsistency). Best-effort: any failure keeps the draft text.
  */
-async function refineTexts(sections: Section[], title: string, speakers: string[]): Promise<void> {
+async function refineTexts(sections: Section[], title: string, speakers: string[]): Promise<boolean> {
   const blocks: NoteBlock[] = [];
   for (const s of sections) for (const b of s.content) blocks.push(b);
-  if (!blocks.length) return;
+  if (!blocks.length) return false;
 
   const map: Record<string, string> = {};
   blocks.forEach((b, i) => (map[i] = b.text));
@@ -589,11 +634,16 @@ async function refineTexts(sections: Section[], title: string, speakers: string[
       temperature: 0.2,
     });
     const cleaned = parseJsonObject<Record<string, unknown>>(text);
+    let applied = false;
     blocks.forEach((b, i) => {
       const v = cleaned[i];
-      if (typeof v === "string" && v.trim()) b.text = v.trim();
+      if (typeof v === "string" && v.trim()) {
+        b.text = v.trim();
+        applied = true;
+      }
     });
+    return applied;
   } catch {
-    /* keep the draft text — never let cleanup block a note */
+    return false; // keep the draft text — never let cleanup block a note
   }
 }

@@ -107,6 +107,12 @@ For a DIALOGUE (conversation OR narrated), each section:
 - The speaker of a block is WHOEVER IS TALKING AT THAT BLOCK'S TIMESTAMP in the transcript. Never
   put one person's words under another's name; when the turn changes at a timestamp, change the
   speaker there.
+- SPLIT AT EVERY TURN CHANGE. The instant a DIFFERENT person starts speaking — even a one-line reply,
+  a greeting, a question, or a handoff — END the current block and START A NEW BLOCK attributed to
+  that new speaker. NEVER put two people's words in the same block. Example: a host wrapping up
+  ("…that's where we're starting today, thank you for joining us") followed by the guest's reply
+  ("Yeah, hi, great to be here") is TWO blocks — Host, then Guest — not one. Likewise, a short
+  interjection or question from the other person is its own block.
 - Narration vs. speech: if the narrator is describing or quoting a person, that stays the NARRATOR's
   block, in the narrator's own words (don't add or invent anything), NOT that person speaking.
   Attribute a block to a person only for their own spoken words. Be consistent — if you attribute one
