@@ -80,9 +80,7 @@ Use the format you are given and echo it back in video_type.
 
 For a MONOLOGUE, each section:
 - Has a short heading naming the topic the speaker is covering, and the starting timestamp.
-- Captures every substantive point as paragraphs and bullets — definitions, steps, arguments,
-  examples, numbers, caveats. Do NOT summarize detail away; this is a complete note, not an abstract.
-- Pulls out especially important or quotable lines as quote blocks with their timestamp.
+- Renders the speaker's COMPLETE words as prose paragraphs, in order — nothing summarized or dropped.
 
 For a DIALOGUE (conversation OR narrated), each section:
 - Groups the material by the topic being discussed, with a heading and starting timestamp.
@@ -110,11 +108,20 @@ For a DIALOGUE (conversation OR narrated), each section:
   block (name whom they mention in the text), NOT that person speaking. Attribute a block to a
   person only for their own spoken words. Be consistent — if you attribute one first-person quote
   from someone, attribute ALL of their first-person quotes the same way.
-- Captures the full substance — disagreements, follow-ups, anecdotes — and pulls key lines into
-  quote blocks.
+- Renders each speaker's COMPLETE words as prose paragraphs — the full back-and-forth, nothing
+  summarized or dropped.
 
 Rules for both:
 - Preserve the video's order exactly. Never reorganize by theme.
+- BLOCK TYPES — default to "paragraph"; the note is complete prose, not an outline:
+    • "paragraph" — the normal block. The speaker's actual words as flowing sentences. Use this for
+      almost everything.
+    • "bullet" — ONLY when the speaker is literally enumerating a list ("there are three reasons:
+      first…, second…, third…"). Each item is a bullet, still in the speaker's own words. Never turn
+      ordinary continuous speech into bullets, and never invent a list.
+    • "quote" — ONLY for reported/quoted speech: when the speaker quotes or recounts what SOMEONE
+      ELSE said, or reads out an explicit quotation. Do NOT use "quote" to highlight the speaker's
+      own ordinary sentences.
 - FAITHFUL BUT CLEAN — this is the most important rule. Keep the speaker's own words, phrasing,
   meaning, and order; do NOT paraphrase, summarize, or add ideas of your own. BUT you MUST write it
   properly, because the source captions are raw and messy:
@@ -157,7 +164,7 @@ Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of 
       "timestamp_label": "<the transcript marker of the line this section starts on, e.g. 5:03; or null>",
       "content": [
         {
-          "type": "paragraph" | "bullet" | "quote",
+          "type": "paragraph" | "bullet" | "quote",  // paragraph by default; see BLOCK TYPES rule
           "text": "<the speaker's own words, cleaned into COMPLETE, punctuated, correctly-spelled sentences — merge caption fragments, no filler/repeats, never cut mid-sentence>",
           "speaker": "<who said it — only when the speaker changes; 'Narrator' for voiceover; omit for a monologue>",
           "timestamp": "<the transcript marker of the line this paragraph STARTS on, e.g. 5:03 — one per paragraph, at its start, never mid-sentence>"
