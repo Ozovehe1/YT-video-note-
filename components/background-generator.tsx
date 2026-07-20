@@ -11,21 +11,79 @@ import { useRouter } from "next/navigation";
  * user closes the tab, generation pauses; opening the app again resumes it
  * from wherever it left off (the server tracks the chunk cursor).
  *
- * Pacing respects the Gemini free-tier limit (NEXT_PUBLIC_GEMINI_RPM, default 5/min),
- * and 429s back off using Gemini's own retry delay. After each chunk it calls
- * router.refresh() so whatever page is open (the reader, the library) updates.
+ * CROSS-TAB SINGLE DRIVER: the free Gemini tier caps requests per minute. If a
+ * driver ran in every open tab, N tabs would multiply the request rate and trip
+ * that cap — which then stalls every note (a 429 never advances a note, so the
+ * tabs keep hammering). To prevent that, tabs elect ONE leader via localStorage;
+ * only the leader makes requests. If the leader tab closes, another takes over.
+ *
+ * Pacing respects NEXT_PUBLIC_GEMINI_RPM (default 5/min), well under the tier
+ * cap, and 429s back off. After each chunk it calls router.refresh() so whatever
+ * page is open (the reader, the library) updates.
  */
 const RPM = Number(process.env.NEXT_PUBLIC_GEMINI_RPM) || 5;
 const MIN_INTERVAL_MS = Math.ceil(60000 / RPM) + 1000;
 const POLL_MS = 20000;
+const LEADER_KEY = "verbatim:gen-leader";
+const LEADER_TTL_MS = 9000; // a leader is considered dead if its heartbeat is older than this
+const HEARTBEAT_MS = 3000; // the leader refreshes its claim this often
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function BackgroundGenerator() {
   const router = useRouter();
   const runningRef = useRef(false);
+  const tabIdRef = useRef<string>("");
+  if (!tabIdRef.current) tabIdRef.current = Math.random().toString(36).slice(2);
 
   useEffect(() => {
     let stopped = false;
+    const tabId = tabIdRef.current;
+
+    // --- Leader election over localStorage. If storage is unavailable (private
+    // mode, etc.) we degrade to "always drive" so a single tab still works. ---
+    let storageOk = true;
+    function readLeader(): { id: string; ts: number } | null {
+      try {
+        return JSON.parse(localStorage.getItem(LEADER_KEY) || "null");
+      } catch {
+        storageOk = false;
+        return null;
+      }
+    }
+    function writeLeader() {
+      try {
+        localStorage.setItem(LEADER_KEY, JSON.stringify({ id: tabId, ts: Date.now() }));
+      } catch {
+        storageOk = false;
+      }
+    }
+    function isLeader(): boolean {
+      if (!storageOk) return true; // no coordination possible → act as sole driver
+      const l = readLeader();
+      if (!storageOk) return true;
+      return !!l && l.id === tabId && Date.now() - l.ts < LEADER_TTL_MS;
+    }
+    function claimLeadershipIfVacant(): boolean {
+      if (!storageOk) return true;
+      const l = readLeader();
+      if (!storageOk) return true;
+      if (!l || l.id === tabId || Date.now() - l.ts >= LEADER_TTL_MS) {
+        writeLeader();
+        return isLeader();
+      }
+      return false;
+    }
+    function releaseLeadership() {
+      if (!storageOk) return;
+      const l = readLeader();
+      if (l && l.id === tabId) {
+        try {
+          localStorage.removeItem(LEADER_KEY);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
 
     // Bounds so a single note can never loop forever. When a cap is hit we stop
     // driving this note for now (it stays `processing`); the next poll tick starts
@@ -40,6 +98,9 @@ export function BackgroundGenerator() {
       let consecNet = 0;
       let consecErr = 0;
       while (!stopped) {
+        // Stop the moment we're no longer the leader, so two tabs never drive at once.
+        if (!isLeader()) return;
+
         const since = Date.now() - lastStart;
         if (lastStart && since < MIN_INTERVAL_MS) {
           await sleep(MIN_INTERVAL_MS - since);
@@ -62,7 +123,7 @@ export function BackgroundGenerator() {
 
         if (res.status === 429) {
           if (++consec429 > MAX_CONSEC_429) return; // quota blocked; back off to next tick
-          await sleep(Math.max(5, data.retryAfter ?? 15) * 1000);
+          await sleep(Math.max(15, data.retryAfter ?? 15) * 1000);
           lastStart = 0;
           continue; // retry same chunk
         }
@@ -85,13 +146,15 @@ export function BackgroundGenerator() {
 
     async function tick() {
       if (stopped || runningRef.current) return;
+      // Only the leader tab drives; a non-leader may take over if the leader died.
+      if (!isLeader() && !claimLeadershipIfVacant()) return;
       runningRef.current = true;
       try {
         const res = await fetch("/api/notes/pending");
         if (!res.ok) return;
         const { ids } = (await res.json()) as { ids: string[] };
         for (const id of ids ?? []) {
-          if (stopped) break;
+          if (stopped || !isLeader()) break;
           await drive(id);
         }
       } catch {
@@ -101,11 +164,21 @@ export function BackgroundGenerator() {
       }
     }
 
+    claimLeadershipIfVacant();
     tick(); // resume immediately on load
     const iv = setInterval(tick, POLL_MS);
+    const hb = setInterval(() => {
+      if (isLeader()) writeLeader(); // keep the claim fresh while we hold it
+    }, HEARTBEAT_MS);
+    const onUnload = () => releaseLeadership();
+    window.addEventListener("beforeunload", onUnload);
+
     return () => {
       stopped = true;
       clearInterval(iv);
+      clearInterval(hb);
+      window.removeEventListener("beforeunload", onUnload);
+      releaseLeadership();
     };
   }, [router]);
 
