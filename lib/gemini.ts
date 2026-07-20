@@ -72,6 +72,33 @@ function gemini(): GoogleGenAI {
 }
 
 /**
+ * One minimal round-trip to Gemini, used by /api/diag to surface the *real*
+ * runtime status: whether the key works, which model answers, and the finish
+ * reason (e.g. MAX_TOKENS with empty text = thinking/output-budget trouble).
+ * Errors are intentionally NOT caught here so the caller can report them raw.
+ */
+export async function geminiSelfTest(): Promise<{
+  model: string;
+  text: string | null;
+  finishReason: string | null;
+}> {
+  const res = await gemini().models.generateContent({
+    model: MODEL,
+    contents: 'Reply with exactly this JSON and nothing else: {"ok":true}',
+    config: {
+      responseMimeType: "application/json",
+      maxOutputTokens: 100,
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  });
+  return {
+    model: MODEL,
+    text: res.text ?? null,
+    finishReason: res.candidates?.[0]?.finishReason ?? null,
+  };
+}
+
+/**
  * Build a representative sample (start + middle + end) so classification sees the
  * conversation's turn-taking, not just the intro (which is often a solo host).
  * Returns the whole transcript when it's short enough.
