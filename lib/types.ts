@@ -34,6 +34,10 @@ export interface Note {
   total_sections: number;
   error_message: string | null;
   created_at: string;
+  // Generation progress (present on rows selected with `*`); used to show a live
+  // progress bar while a note is still being written.
+  chunk_cursor?: number;
+  chunk_total?: number;
 }
 
 export interface Profile {

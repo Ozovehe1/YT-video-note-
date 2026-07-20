@@ -141,6 +141,9 @@ export function Reader({
   }, [index, goTo]);
 
   const processing = note.status === "processing";
+  const parts = note.chunk_total ?? 0;
+  const partsDone = note.chunk_cursor ?? 0;
+  const genPercent = parts > 0 ? Math.min(96, Math.round((partsDone / parts) * 100)) : 0;
 
   // Drive generation for THIS note while it's open and unfinished. The reader is
   // the most reliable place to do this: whatever you're looking at gets written,
@@ -292,22 +295,31 @@ export function Reader({
             </div>
           </header>
 
-          {processing && (
-            <div className="mb-8 flex items-center gap-2 rounded-xl border border-oxblood/20 bg-oxblood/5 px-4 py-3 text-sm text-ink">
-              <Loader2 className="h-4 w-4 flex-none animate-spin text-oxblood" />
-              Writing this note — new sections appear as they&rsquo;re ready. You can leave; it keeps
-              going and picks up where it left off.
+          {processing && total > 0 && (
+            <div className="mb-8 rounded-xl border border-oxblood/20 bg-oxblood/[0.04] px-4 py-3">
+              <div className="flex items-center gap-2 text-sm text-ink">
+                <Loader2 className="h-4 w-4 flex-none animate-spin text-oxblood" />
+                <span>
+                  Still writing — new sections appear as they&rsquo;re ready. You can leave; it keeps
+                  going.
+                </span>
+              </div>
+              {genPercent > 0 && (
+                <div className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-panel">
+                  <div
+                    className="h-full rounded-full bg-oxblood transition-[width] duration-700 ease-out"
+                    style={{ width: `${genPercent}%` }}
+                  />
+                </div>
+              )}
             </div>
           )}
 
           {total === 0 ? (
             processing ? (
-              <div className="flex flex-col items-center py-16 text-center">
-                <Loader2 className="h-6 w-6 animate-spin text-oxblood" />
-                <p className="mt-4 text-muted">Writing the first section…</p>
-              </div>
+              <GeneratingState note={note} sectionsSoFar={total} percent={genPercent} />
             ) : (
-              <p className="text-muted">No sections yet.</p>
+              <EmptyNote />
             )
           ) : (
             <SectionView section={sections[index]} />
@@ -322,6 +334,7 @@ export function Reader({
             <PagerButton disabled={index === 0} onClick={() => goTo(index - 1)} dir="prev" />
             <span className="font-mono text-xs text-muted">
               Page {index + 1} / {total}
+              {processing && <span className="text-oxblood"> · writing…</span>}
             </span>
             <PagerButton disabled={index >= total - 1} onClick={() => goTo(index + 1)} dir="next" />
           </div>
@@ -478,6 +491,87 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
     <div className="flex items-center gap-2.5">
       <span className="font-mono text-[0.65rem] uppercase tracking-wide text-muted">{label}</span>
       {children}
+    </div>
+  );
+}
+
+/** Premium, informative state shown while the first section is still being written. */
+function GeneratingState({
+  note,
+  sectionsSoFar,
+  percent,
+}: {
+  note: Note;
+  sectionsSoFar: number;
+  percent: number;
+}) {
+  const parts = note.chunk_total ?? 0;
+  const preparing = (note.chunk_cursor ?? 0) === 0 && sectionsSoFar === 0;
+  const kicker = preparing ? "Preparing" : "Writing";
+  const heading = preparing ? "Reading the transcript" : "Writing your note";
+  const sub = preparing
+    ? "Taking in the whole video and setting the structure. Your first section appears in a few moments."
+    : parts > 0
+      ? `Working through the video — part ${Math.min((note.chunk_cursor ?? 0) + 1, parts)} of ${parts}.`
+      : "Turning the transcript into a structured reading note.";
+  const barWidth = Math.max(6, percent || (preparing ? 6 : 12));
+
+  return (
+    <div className="py-6">
+      <div className="mx-auto max-w-prose">
+        <p className="font-mono text-[0.7rem] uppercase tracking-[0.2em] text-oxblood">{kicker}</p>
+        <h2 className="mt-2 font-display text-[1.7rem] font-semibold leading-tight text-ink">
+          {heading}
+        </h2>
+        <p className="mt-2 text-[0.95rem] leading-relaxed text-muted">{sub}</p>
+
+        <div className="mt-6 h-1.5 w-full overflow-hidden rounded-full bg-panel">
+          <div
+            className="h-full rounded-full bg-oxblood transition-[width] duration-700 ease-out"
+            style={{ width: `${barWidth}%` }}
+          />
+        </div>
+        <div className="mt-2 flex items-center justify-between font-mono text-[0.65rem] text-muted">
+          <span>{percent > 0 ? `${percent}%` : "starting…"}</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oxblood" /> saving as it writes
+          </span>
+        </div>
+
+        {/* Skeleton preview of the reading layout, so the wait feels like the page loading. */}
+        <div className="mt-10 space-y-8" aria-hidden>
+          {[0, 1].map((b) => (
+            <div key={b} className="space-y-3">
+              <div className="h-5 w-2/5 animate-pulse rounded bg-panel" />
+              <div className="h-3.5 w-full animate-pulse rounded bg-panel/80" />
+              <div className="h-3.5 w-11/12 animate-pulse rounded bg-panel/70" />
+              <div className="h-3.5 w-4/6 animate-pulse rounded bg-panel/60" />
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-10 border-t border-hairline pt-5 text-center text-sm text-muted">
+          You can leave this page — it keeps writing and picks up where it left off.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Rare fallback: a finished note that somehow has no sections. */
+function EmptyNote() {
+  return (
+    <div className="mx-auto max-w-prose py-12 text-center">
+      <h2 className="font-display text-xl font-semibold text-ink">Nothing to show here</h2>
+      <p className="mt-2 text-sm text-muted">
+        This note didn&rsquo;t capture any sections. Making it again usually fixes it.
+      </p>
+      <Link
+        href="/new"
+        className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-oxblood px-5 py-2.5 text-sm font-semibold text-paper transition-transform hover:-translate-y-px"
+      >
+        Create a new note
+      </Link>
     </div>
   );
 }
