@@ -49,13 +49,18 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   // Establish running context from what already exists.
   const { data: lastSection } = await supabase
     .from("note_sections")
-    .select("order_index, heading")
+    .select("order_index, heading, content")
     .eq("note_id", id)
     .order("order_index", { ascending: false })
     .limit(1)
     .maybeSingle();
 
   const nextOrderBase = lastSection ? lastSection.order_index + 1 : 0;
+  // Who was speaking at the end of the last section — so attribution carries across pages.
+  const lastBlocks = Array.isArray(lastSection?.content) ? lastSection!.content : [];
+  const previousSpeaker =
+    [...lastBlocks].reverse().find((b) => b && typeof b.speaker === "string" && b.speaker)?.speaker ??
+    null;
 
   // Try the chunk, retrying transient failures (bad JSON, empty output, a model
   // 5xx) once before giving up — so a single flaky response doesn't kill the note.
@@ -72,6 +77,7 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
         videoType: (note.video_type as VideoType | null) ?? null,
         speakers: note.speakers ?? [],
         previousHeading: lastSection?.heading ?? null,
+        previousSpeaker,
         chunkText: chunks[cursor],
       });
       break;

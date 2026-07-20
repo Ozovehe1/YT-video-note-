@@ -335,6 +335,7 @@ interface GenerateOpts {
   videoType: VideoType | null;
   speakers: string[];
   previousHeading: string | null;
+  previousSpeaker?: string | null;
   chunkText: string;
 }
 
@@ -403,8 +404,15 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
   const { parsed } = await runChunk(opts);
   const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
-  const refined = await refineSections(parsed.sections, opts.videoTitle, speakers);
-  if (refined) parsed.sections = refined;
+
+  // Consistency guarantees (in code, so every page matches regardless of the model):
+  const isDialogue = opts.videoType === "dialogue" || parsed.video_type === "dialogue";
+  if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
+  backfillSectionTimestamps(parsed.sections);
+
+  // Text-only copy-edit — cleans wording without touching timestamps/speakers/structure.
+  await refineTexts(parsed.sections, opts.videoTitle, speakers);
+
   return parsed;
 }
 
@@ -537,25 +545,55 @@ function shapeSections(raw: unknown, speakers: string[]): Section[] {
     .filter((s) => s.content.length > 0);
 }
 
+/** For a dialogue, ensure EVERY block has a speaker: an unlabelled block continues the prior turn. */
+function forwardFillSpeakers(sections: Section[], seed: string | null | undefined): void {
+  let last = seed || undefined;
+  for (const s of sections) {
+    for (const b of s.content) {
+      if (b.speaker) last = b.speaker;
+      else if (last) b.speaker = last;
+    }
+  }
+}
+
+/** Ensure every section has a timestamp_label (fall back to its first block's timestamp). */
+function backfillSectionTimestamps(sections: Section[]): void {
+  for (const s of sections) {
+    if (!s.timestamp_label) {
+      const firstTs = s.content.find((b) => b.timestamp)?.timestamp;
+      if (firstTs) s.timestamp_label = firstTs;
+    }
+  }
+}
+
 /**
- * Second pass: hand the just-generated sections to a copy-editor model to remove
- * remaining filler/stutters, fix names, and correct obvious mis-attribution.
- * Best-effort — returns null on any failure so the caller keeps the draft.
+ * Second pass: a TEXT-ONLY copy-edit. We flatten every block's text to an indexed
+ * map, let the model clean each line, then write ONLY the text back — so the pass
+ * can never drop or change a timestamp, speaker, or the structure (the source of
+ * page-to-page inconsistency). Best-effort: any failure keeps the draft text.
  */
-async function refineSections(sections: Section[], title: string, speakers: string[]): Promise<Section[] | null> {
-  if (!sections.length) return null;
+async function refineTexts(sections: Section[], title: string, speakers: string[]): Promise<void> {
+  const blocks: NoteBlock[] = [];
+  for (const s of sections) for (const b of s.content) blocks.push(b);
+  if (!blocks.length) return;
+
+  const map: Record<string, string> = {};
+  blocks.forEach((b, i) => (map[i] = b.text));
+
   try {
     const { text } = await chat({
       system: REFINE_SYSTEM_PROMPT,
-      user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify({ sections }) }),
+      user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(map) }),
       maxTokens: 4000,
       timeoutMs: 22000,
       temperature: 0.2,
     });
-    const parsed = parseJsonObject<{ sections?: unknown }>(text);
-    const shaped = shapeSections(parsed.sections, speakers);
-    return shaped.length ? shaped : null;
+    const cleaned = parseJsonObject<Record<string, unknown>>(text);
+    blocks.forEach((b, i) => {
+      const v = cleaned[i];
+      if (typeof v === "string" && v.trim()) b.text = v.trim();
+    });
   } catch {
-    return null; // never let the cleanup pass block a note
+    /* keep the draft text — never let cleanup block a note */
   }
 }

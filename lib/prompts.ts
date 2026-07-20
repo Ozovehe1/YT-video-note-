@@ -100,6 +100,12 @@ For a DIALOGUE (conversation OR narrated), each section:
   single block — never repeat the same speaker label on back-to-back blocks.
 - NEVER write a speaker's name inside the "text" field (no "Name:" prefix in the text). The speaker
   belongs ONLY in the "speaker" field; "text" is just what they said.
+- ATTRIBUTE EVERY BLOCK. In a dialogue, every block MUST have a "speaker" — and the FIRST block of
+  every section must too (a section may open a new page, so it can't rely on earlier context). A
+  block that continues the same person's turn repeats that same speaker.
+- The speaker of a block is WHOEVER IS TALKING AT THAT BLOCK'S TIMESTAMP in the transcript. Never
+  put one person's words under another's name; when the turn changes at a timestamp, change the
+  speaker there.
 - Narration vs. speech: if the narrator is describing or quoting a person, that is the NARRATOR's
   block (name whom they mention in the text), NOT that person speaking. Attribute a block to a
   person only for their own spoken words. Be consistent — if you attribute one first-person quote
@@ -127,11 +133,11 @@ Rules for both:
   paragraphs. Every content block must be one or more COMPLETE sentences (a finished thought).
   NEVER cut a sentence in half, and NEVER start a new block just because a new timestamp appeared.
 - TIMESTAMPS ANCHOR PARAGRAPHS — they let a reader jump to that spot in the video. Rules:
-    • Set each section's "timestamp_label" to the transcript marker of the line where the section
-      starts.
-    • Give EACH paragraph and quote block a "timestamp" equal to the transcript marker of the line
-      it STARTS on. Timestamps should recur regularly — roughly one per paragraph — NOT one per
-      section and NOT one per caption fragment.
+    • EVERY section MUST have a "timestamp_label" — the transcript marker of the line where the
+      section starts.
+    • EVERY paragraph and quote block MUST have a "timestamp" — the transcript marker of the line it
+      STARTS on. Timestamps recur once per paragraph — NOT one per section, NOT one per caption
+      fragment. Do this consistently in every chunk; never leave a page without timestamps.
     • A timestamp must NEVER fall in the middle of a sentence. First merge caption fragments into
       whole sentences/paragraphs, THEN put the one timestamp at the paragraph's start.
     • COPY the marker verbatim from the transcript — never invent, estimate, round, or reformat a
@@ -171,6 +177,7 @@ export function chunkUserPrompt(opts: {
   videoType: VideoType | null;
   speakers: string[];
   previousHeading: string | null;
+  previousSpeaker?: string | null;
   chunkText: string;
 }): string {
   const {
@@ -182,6 +189,7 @@ export function chunkUserPrompt(opts: {
     videoType,
     speakers,
     previousHeading,
+    previousSpeaker,
     chunkText,
   } = opts;
 
@@ -200,11 +208,16 @@ clearly joins.`
 repeat earlier material.`;
   const dialogueLine =
     videoType === "dialogue"
-      ? ` This is a conversation: attribute every substantive point to its speaker via the block's
-"speaker" field, and capture the back-and-forth (questions and the answers to them).`
+      ? ` This is a conversation: attribute EVERY block to its speaker via the "speaker" field (the
+first block of your first section included), and capture the back-and-forth (questions and answers).`
+      : "";
+  const prevSpeakerLine =
+    videoType === "dialogue" && !isFirst && previousSpeaker
+      ? ` When this chunk opens, ${previousSpeaker} was the one speaking — continue from there unless
+the words clearly belong to someone else.`
       : "";
 
-  const context = `${typeLine}${speakersLine} ${positionLine}${dialogueLine}`;
+  const context = `${typeLine}${speakersLine} ${positionLine}${dialogueLine}${prevSpeakerLine}`;
 
   return `Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
 Chunk ${chunkIndex + 1} of ${chunkTotal}.
@@ -222,25 +235,19 @@ ${chunkText}
 // language without touching meaning or structure.
 // ---------------------------------------------------------------------------
 export const REFINE_SYSTEM_PROMPT = `\
-You are a meticulous copy-editor. You receive a JSON note (sections of content blocks) that was
-transcribed from speech and may still be rough. Clean it up and return the SAME JSON shape.
+You are a meticulous copy-editor. You receive a JSON object mapping index → a line of text that was
+transcribed from speech. Clean EACH line and return a JSON object with the SAME indices → cleaned text.
 
-DO:
+For each line:
 - Remove filler ("uh", "um", "you know", "like", "I mean", "sort of", "kind of", "basically").
 - Remove stutters, false starts, and accidentally repeated words ("that that" → "that",
   "in a a setting" → "in a setting", "when when" → "when").
 - Fix punctuation, capitalization, and spelling — especially people's names and technical terms.
-- If a block's "text" mistakenly starts with a speaker name like "Jane:", delete that prefix (the
-  speaker belongs only in the "speaker" field).
-- Fix obvious speaker mis-attribution (e.g. an interviewer's question labelled as the guest).
+- If a line starts with a speaker name like "Jane:", delete that prefix.
 
-DO NOT:
-- Change the meaning, the speaker's wording (beyond the cleanup above), or the order.
-- Summarize, paraphrase, add, or drop content.
-- Change "timestamp_label" or "timestamp" values, or invent new ones.
-- Change the set of speakers.
-
-Return ONLY the JSON object { "sections": [ ... ] } — same shape as the input, no commentary.`;
+DO NOT change the meaning or the speaker's wording beyond that cleanup. Do NOT merge, split, drop,
+reorder, or renumber lines. Keep EXACTLY the same set of indices. Return ONLY the JSON object, e.g.
+{"0":"cleaned text","1":"cleaned text"} — no commentary.`;
 
 export function refineUserPrompt(opts: {
   videoTitle: string;
@@ -248,10 +255,10 @@ export function refineUserPrompt(opts: {
   payload: string;
 }): string {
   const names = opts.speakers.length
-    ? `Correct spellings of names/labels to use: ${opts.speakers.join(", ")}.\n`
+    ? `Correct spellings of names/terms to use: ${opts.speakers.join(", ")}.\n`
     : "";
   return `Video: "${opts.videoTitle}".
-${names}Clean this note and return the same JSON shape:
+${names}Clean each line and return the same indices with cleaned text:
 
 ${opts.payload}`;
 }
