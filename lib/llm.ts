@@ -929,9 +929,41 @@ function normalizeSpeaker(raw: string, speakers: string[]): string {
 }
 
 /**
- * Decide the speaker of every line via a dedicated labels-only model call. Returns one
- * speaker per input line (carry-forward filled). Best-effort: on any failure it falls
- * back to keeping the previous speaker, so it can never stall or scramble a note.
+ * Turn the model's list of TURN-STARTS ([{startLine, speaker}]) into a valid ordered
+ * list of change-points. Drops out-of-range / invented-name / non-increasing entries and
+ * dedupes by line — so the segmentation is always monotonic and uses only known speakers.
+ */
+function normalizeTurnStarts(
+  raw: Array<{ startLine?: unknown; speaker?: unknown }>,
+  lineCount: number,
+  speakers: string[],
+): Array<{ startLine: number; speaker: string }> {
+  const seen = new Set<number>();
+  const starts: Array<{ startLine: number; speaker: string }> = [];
+  for (const e of raw) {
+    const i = Number(e.startLine);
+    if (!Number.isInteger(i) || i < 0 || i >= lineCount || seen.has(i)) continue;
+    const sp = typeof e.speaker === "string" ? normalizeSpeaker(e.speaker, speakers) : "";
+    if (!sp) continue;
+    seen.add(i);
+    starts.push({ startLine: i, speaker: sp });
+  }
+  starts.sort((a, b) => a.startLine - b.startLine);
+  // Collapse a change that doesn't actually change the speaker (same as the one before it).
+  const out: Array<{ startLine: number; speaker: string }> = [];
+  for (const s of starts) {
+    if (out.length && out[out.length - 1].speaker === s.speaker) continue;
+    out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Decide the speaker of every line via a dedicated CHANGE-POINT call: the model marks the
+ * few lines where a new speaker takes over, and every line between two change-points is the
+ * same speaker. This makes long same-speaker runs the default and a switch the exception —
+ * the opposite of per-line labelling, which drifts into mechanical alternation.
+ * Best-effort: on any failure the whole chunk falls back to the seed speaker (no alternation).
  */
 async function diarizeChunk(opts: {
   videoTitle: string;
@@ -945,7 +977,7 @@ async function diarizeChunk(opts: {
   if (lines.length === 0) return [];
   if (speakers.length < 2) return lines.map(() => seed);
 
-  let assigned = new Map<number, string>();
+  let starts: Array<{ startLine: number; speaker: string }> = [];
   try {
     const { text } = await chat({
       system: DIARIZE_SYSTEM_PROMPT,
@@ -955,27 +987,26 @@ async function diarizeChunk(opts: {
         previousSpeaker,
         numberedLines: buildNumberedLines(lines),
       }),
-      maxTokens: 2000,
+      maxTokens: 1200, // just the few turn-starts, not one entry per line
       timeoutMs: 15000, // diarize + write must both fit the 60s serverless limit
-      temperature: 0.2, // classification — deterministic, not creative
+      temperature: 0.1, // we want the single most likely, stable segmentation
     });
-    const arr = parseJsonArray<{ line?: unknown; speaker?: unknown }>(text);
-    for (const e of arr) {
-      const i = Number(e.line);
-      if (!Number.isInteger(i) || i < 0 || i >= lines.length) continue;
-      const sp = typeof e.speaker === "string" ? normalizeSpeaker(e.speaker, speakers) : "";
-      if (sp) assigned.set(i, sp);
-    }
+    const arr = parseJsonArray<{ startLine?: unknown; speaker?: unknown }>(text);
+    starts = normalizeTurnStarts(arr, lines.length, speakers);
   } catch {
-    assigned = new Map(); // fall back entirely to carry-forward
+    starts = []; // fall back entirely to the seed speaker
   }
 
-  // Carry the speaker forward across any line the model left unlabeled.
+  // Walk the lines, switching speaker only at a valid change-point. Lines before the first
+  // change-point belong to the seed (the previous page's speaker, else the host).
   const out: string[] = [];
-  let cur = seed;
+  let cur = starts.length && starts[0].startLine === 0 ? starts[0].speaker : seed;
+  let next = 0;
   for (let i = 0; i < lines.length; i++) {
-    const s = assigned.get(i);
-    if (s) cur = s;
+    while (next < starts.length && starts[next].startLine === i) {
+      cur = starts[next].speaker;
+      next++;
+    }
     out.push(cur);
   }
   return out;

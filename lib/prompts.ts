@@ -242,30 +242,42 @@ ${body}`;
 // prior). The writer then consumes these labels instead of guessing.
 // ---------------------------------------------------------------------------
 export const DIARIZE_SYSTEM_PROMPT = `\
-You label WHO SPEAKS each line of a conversation transcript. You receive an ordered, numbered list of
-caption lines and the list of speakers. Return a JSON array assigning ONE speaker to EACH line:
-[{ "line": <number>, "speaker": "<one of the given speakers>" }] — one entry per input line, in order.
+You find the FEW points where the speaker CHANGES in a conversation transcript. You receive an
+ordered, numbered list of caption lines and the list of speakers. Return a JSON array of TURNS — one
+entry each time a NEW speaker takes over:
+  [{ "startLine": <line number where this speaker STARTS>, "speaker": "<one of the given speakers>" }]
+The FIRST entry starts at line 0. Every line from a turn's startLine up to (but not including) the
+next turn's startLine is spoken by that turn's speaker. You do NOT rewrite, clean, or reorder any
+words — you ONLY mark where the speaker changes and who it is.
 
-You do NOT rewrite, clean, translate, split, drop, or reorder any words. You ONLY choose a speaker
-per line. Rules:
-- Use ONLY the speaker names given to you. NEVER invent, guess, or introduce a name not in the list.
+** A SPEAKER HOLDS THE FLOOR FOR MANY CONSECUTIVE LINES. ** This is NOT turn-by-turn. One person
+often talks for a long stretch — many lines in a row — before anyone else speaks. Emit a new turn
+ONLY when there is CLEAR evidence a different person has started. When in doubt, DO NOT start a new
+turn — it is far better to keep one speaker too long than to invent a change. Most chunks have very
+few turns; some have only one.
+
+Rules:
+- Use ONLY the speaker names given. NEVER invent, guess, or introduce a name not in the list.
 - ROLE MAP: the FIRST speaker in the list is the INTERVIEWER / HOST (welcomes, introduces, ASKS the
-  questions — usually shorter turns). The later name(s) are the GUEST(s), who give the longer
-  first-person answers. In a narrated video the first speaker is "Narrator".
-- CARRY THE CURRENT SPEAKER FORWARD. A person keeps talking across many lines. Do NOT alternate
-  speakers line by line. Only CHANGE the speaker when there is real evidence of a turn change; until
-  then, every line stays with the same speaker as the line before it.
-- Evidence of a TURN CHANGE (switch the speaker):
+  questions). The later name(s) are the GUEST(s), who give the longer first-person answers. In a
+  narrated video the first speaker is "Narrator".
+- THIRD PERSON = THE HOST, NOT THE SUBJECT. Talking ABOUT someone in the third person ("he", "she",
+  "they", or by name — "he co-founded the company", "she has a rare gift") is the HOST/narrator
+  describing them. A person becomes the speaker ONLY when they speak in the FIRST person ("I", "my",
+  "we", "I'm excited to be here"). Never switch to a person just because their name or "he/she" appears.
+- INTROS ARE ONE SPEAKER. An interview opens with the host talking ALONE — introducing the guest,
+  usually in the third person, for many lines. Keep the ENTIRE intro under the host until the guest
+  actually starts speaking in the FIRST person (e.g. "yeah, thanks for having me", "I'm excited to be
+  here", answering a question). That first-person reply is the guest's first turn.
+- START A NEW TURN only on real evidence:
     • a question ends and a first-person answer begins (or vice-versa);
-    • a line opens with a reply/greeting to what was just said ("yeah", "right", "exactly", "sure",
-      "thanks for having me", "hello", "well,");
-    • a first-person/second-person flip ("you… / your…" addressing → "I… / my…" answering);
-    • a ⏸ marker at the start of a line (a noticeable pause before it) makes a change more likely.
-- NAME CUE (strong): when a line addresses or thanks someone BY NAME ("thank you, Dana, for
-  joining", "over to you, Sam"), the person NAMED is the OTHER speaker and speaks the NEXT turn — the
-  line doing the addressing belongs to whoever was already speaking (usually the host).
-- When this chunk opens, you may be told who was speaking on the previous page — continue with that
-  speaker until evidence flips it.
+    • a line clearly opens a first-person REPLY to what was just said ("yeah", "well,", "so for me",
+      "thanks for having me") — the reply belongs to the OTHER person;
+    • a ⏸ pause marker plus a first-person shift.
+- NAME/HANDOFF CUE: when a line addresses or thanks someone BY NAME ("thank you, Dana, for joining",
+  "over to you"), that addressing line belongs to whoever was ALREADY speaking (the host); the person
+  NAMED speaks the NEXT turn — but only starting from the line where their own first-person words begin.
+- If told who spoke on the previous page, the first turn continues with THAT speaker until evidence flips.
 
 Return ONLY the JSON array — no commentary, no rewritten text.`;
 
@@ -279,12 +291,13 @@ export function diarizeUserPrompt(opts: {
     ? `Speakers (first = interviewer/host, then guest(s)): ${opts.speakers.join(", ")}.`
     : "";
   const prev = opts.previousSpeaker
-    ? `\nWhen this chunk opens, ${opts.previousSpeaker} was speaking on the previous page — continue from there unless the words flip.`
+    ? `\nWhen this chunk opens, ${opts.previousSpeaker} was speaking on the previous page — the first turn continues with them unless the words clearly flip to someone else.`
     : "";
   return `Video: "${opts.videoTitle}".
 ${roleHint}${prev}
 
-Assign one speaker to every line below, carrying the speaker forward except at a real turn change:
+Mark where the speaker CHANGES in the lines below (few turns — a speaker holds the floor across many
+lines). Return the turns as [{ "startLine", "speaker" }], the first starting at line 0:
 
 ${opts.numberedLines}`;
 }
