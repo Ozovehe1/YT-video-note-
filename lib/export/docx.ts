@@ -13,10 +13,9 @@ import { normalizeTimestamp } from "@/lib/utils";
 const OXBLOOD = "8A2B22";
 const MUTED = "5C5446";
 
-function runs(b: NoteBlock, showSpeaker: boolean): TextRun[] {
+function runs(b: NoteBlock): TextRun[] {
   const out: TextRun[] = [];
-  if (b.speaker && showSpeaker)
-    out.push(new TextRun({ text: `${b.speaker}: `, bold: true, color: OXBLOOD }));
+  if (b.speaker) out.push(new TextRun({ text: `${b.speaker}: `, bold: true, color: OXBLOOD }));
   out.push(new TextRun({ text: b.text, italics: b.type === "quote" }));
   const tsValue = normalizeTimestamp(b.timestamp);
   if (tsValue) out.push(new TextRun({ text: `  [${tsValue}]`, color: MUTED, size: 16 }));
@@ -73,23 +72,20 @@ export async function toDocx(note: Note, sections: NoteSection[]): Promise<Buffe
         ],
       }),
     );
-    let prevSpeaker: string | undefined;
     for (const b of s.content) {
-      const showSpeaker = !!b.speaker && b.speaker !== prevSpeaker;
-      if (b.speaker) prevSpeaker = b.speaker;
       if (b.type === "bullet") {
-        children.push(new Paragraph({ bullet: { level: 0 }, children: runs(b, showSpeaker) }));
+        children.push(new Paragraph({ bullet: { level: 0 }, children: runs(b) }));
       } else if (b.type === "quote") {
         children.push(
           new Paragraph({
             alignment: AlignmentType.LEFT,
             indent: { left: 360 },
             spacing: { before: 60, after: 60 },
-            children: runs(b, showSpeaker),
+            children: runs(b),
           }),
         );
       } else {
-        children.push(new Paragraph({ spacing: { after: 120 }, children: runs(b, showSpeaker) }));
+        children.push(new Paragraph({ spacing: { after: 120 }, children: runs(b) }));
       }
     }
   }

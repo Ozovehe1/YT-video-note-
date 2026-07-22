@@ -36,34 +36,34 @@ const s = StyleSheet.create({
   },
 });
 
-function inline(b: NoteBlock, showSpeaker: boolean) {
+function inline(b: NoteBlock) {
   const tsValue = normalizeTimestamp(b.timestamp);
   return (
     <>
-      {b.speaker && showSpeaker ? <Text style={s.speaker}>{b.speaker}: </Text> : null}
+      {b.speaker ? <Text style={s.speaker}>{b.speaker}: </Text> : null}
       <Text>{b.text}</Text>
       {tsValue ? <Text style={s.ts}>{"  [" + tsValue + "]"}</Text> : null}
     </>
   );
 }
 
-function Block({ b, showSpeaker }: { b: NoteBlock; showSpeaker: boolean }) {
+function Block({ b }: { b: NoteBlock }) {
   if (b.type === "bullet") {
     return (
       <View style={s.bulletRow}>
         <Text style={s.bulletDot}>•</Text>
-        <Text style={s.bulletText}>{inline(b, showSpeaker)}</Text>
+        <Text style={s.bulletText}>{inline(b)}</Text>
       </View>
     );
   }
   if (b.type === "quote") {
     return (
       <View style={s.quote}>
-        <Text style={s.quoteText}>{inline(b, showSpeaker)}</Text>
+        <Text style={s.quoteText}>{inline(b)}</Text>
       </View>
     );
   }
-  return <Text style={s.para}>{inline(b, showSpeaker)}</Text>;
+  return <Text style={s.para}>{inline(b)}</Text>;
 }
 
 function NoteDoc({ note, sections }: { note: Note; sections: NoteSection[] }) {
@@ -89,14 +89,9 @@ function NoteDoc({ note, sections }: { note: Note; sections: NoteSection[] }) {
                 <Text style={s.h2ts}>{"   " + normalizeTimestamp(sec.timestamp_label)}</Text>
               ) : null}
             </Text>
-            {(() => {
-              let prev: string | undefined;
-              return sec.content.map((b, i) => {
-                const showSpeaker = !!b.speaker && b.speaker !== prev;
-                if (b.speaker) prev = b.speaker;
-                return <Block key={i} b={b} showSpeaker={showSpeaker} />;
-              });
-            })()}
+            {sec.content.map((b, i) => (
+              <Block key={i} b={b} />
+            ))}
           </View>
         ))}
         <View style={s.footer} fixed>

@@ -3,15 +3,8 @@ import {
   chunkUserPrompt,
   CLASSIFY_SYSTEM_PROMPT,
   classifyUserPrompt,
-  REFINE_SYSTEM_PROMPT,
-  refineUserPrompt,
-  DIARIZE_SYSTEM_PROMPT,
-  diarizeUserPrompt,
-  type DialogueTurn,
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
-
-type Section = GeneratedChunk["sections"][number];
 
 // ---------------------------------------------------------------------------
 // LLM backend: NVIDIA's OpenAI-compatible API, called directly with fetch.
@@ -38,19 +31,8 @@ const FALLBACK_MODELS = (
 /** The models we try, in order — the primary first, then fallbacks. Deduped. */
 export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
 
-// Stronger model for the ONCE-per-note classify + speaker-role step (monologue vs
-// dialogue, and who is host vs guest). It runs off the 60s per-chunk path, so a
-// slower/smarter reasoning model helps resolve who's the host without hurting generation
-// speed. Bounded (~40s) and falls back to the fast MODEL if it's slow, gated, or down —
-// so it self-heals even when a key can't reach it. Override or set to LLM_MODEL to disable.
-export const CLASSIFY_MODEL =
-  process.env.LLM_CLASSIFY_MODEL || "nvidia/nemotron-3-ultra-550b-a55b";
-const CLASSIFY_USES_STRONG = CLASSIFY_MODEL !== MODEL;
-
-// The note DRAFT model. Defaults to the fast MODEL (Flash) — the stronger models
-// are too slow for the 60s serverless limit. Can be opted into via LLM_DRAFT_MODEL.
-export const DRAFT_MODEL = process.env.LLM_DRAFT_MODEL || MODEL;
-const DRAFT_USES_STRONG = DRAFT_MODEL !== MODEL;
+// Kept for backward-compat / diagnostics; classification uses the same fallback list.
+export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
 
 /** Thrown when the provider returns 429, carrying its suggested wait. */
 export class RateLimitError extends Error {
@@ -90,9 +72,6 @@ class ProviderError extends Error {
 function isModelUnavailable(err: unknown): boolean {
   if (!(err instanceof ProviderError)) return false;
   if (err.status >= 500 || err.status === 404) return true;
-  // 402/403 = this key can't access THIS model (needs credits / not on the tier). That's
-  // a per-model gate, not a bad key, so fall over to the next model instead of failing.
-  if (err.status === 402 || err.status === 403) return true;
   return (
     err.status === 400 &&
     /DEGRADED|cannot be invoked|not found|does not exist|unknown model|not a valid model|no healthy/i.test(
@@ -132,11 +111,9 @@ async function callOnce(opts: {
     max_tokens: opts.maxTokens,
     stream: false,
   };
-  // Reasoning models need their chain-of-thought suppressed so the reply is just the
-  // answer (and fast). Each family names the flag differently, so send the matching one
-  // — an unknown field would be rejected by other models.
+  // DeepSeek reasoning models need this to keep chain-of-thought out of the answer.
+  // Other model families may reject the unknown field, so only send it to DeepSeek.
   if (/deepseek/i.test(opts.model)) body.chat_template_kwargs = { thinking: false };
-  else if (/nemotron/i.test(opts.model)) body.chat_template_kwargs = { enable_thinking: false };
 
   const ctrl = new AbortController();
   // Bound each call well under Vercel's hard 60s ceiling so a slow model can't
@@ -188,7 +165,6 @@ async function chat(opts: {
   user: string;
   maxTokens: number;
   timeoutMs?: number;
-  temperature?: number;
 }): Promise<{ text: string; finishReason: string | null; model: string }> {
   const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
   let lastErr: unknown;
@@ -219,35 +195,6 @@ async function chat(opts: {
 }
 
 /**
- * Try an explicit, ordered list of {model, timeoutMs} attempts — used for the note
- * DRAFT so a strong-but-slow model gets a bounded window, then a fast model backs
- * it up, all within the serverless budget. Returns which model actually served.
- */
-async function chatPreferred(
-  attempts: Array<{ model: string; timeoutMs: number }>,
-  opts: { system: string; user: string; maxTokens: number; temperature?: number },
-): Promise<{ text: string; finishReason: string | null; model: string }> {
-  let lastErr: unknown;
-  for (const a of attempts) {
-    try {
-      const r = await callOnce({ model: a.model, timeoutMs: a.timeoutMs, ...opts });
-      return { ...r, model: a.model };
-    } catch (err) {
-      if (err instanceof ProviderError && err.status === 429) {
-        throw new RateLimitError(err.retryAfter ?? 15);
-      }
-      if (isModelUnavailable(err) || isTimeout(err)) {
-        lastErr = err;
-        console.warn(`[llm] draft model ${a.model} unavailable/slow, trying next:`, (err as Error).message);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr ?? new Error("All draft models are unavailable.");
-}
-
-/**
  * Parse the model's JSON reply defensively. We ask for raw JSON, but still
  * tolerate a stray code fence or leading prose by extracting the outermost
  * {...} before parsing — so a minor formatting slip never fails a chunk.
@@ -266,35 +213,14 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
-/** Parse a JSON array reply defensively (tolerates fences/prose around it). */
-function parseJsonArray<T>(text: string): T[] {
-  const trimmed = text.trim();
-  try {
-    const v = JSON.parse(trimmed);
-    if (Array.isArray(v)) return v as T[];
-  } catch {
-    /* fall through */
-  }
-  const start = trimmed.indexOf("[");
-  const end = trimmed.lastIndexOf("]");
-  if (start !== -1 && end > start) {
-    const v = JSON.parse(trimmed.slice(start, end + 1));
-    if (Array.isArray(v)) return v as T[];
-  }
-  throw new Error("Model reply was not a JSON array.");
-}
-
-// Candidate models the diagnostic health-checks. Includes the fallback list plus the
-// optional classify model (so /api/diag shows whether the key can reach it). Override
-// with LLM_PROBE_MODELS (comma-separated).
-const PROBE_MODELS = Array.from(
-  new Set(
-    (process.env.LLM_PROBE_MODELS || [...MODELS, CLASSIFY_MODEL].join(","))
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean),
-  ),
-);
+// Candidate models the diagnostic health-checks. Includes the fallback list plus a
+// couple extras. Override with LLM_PROBE_MODELS (comma-separated).
+const PROBE_MODELS = (
+  process.env.LLM_PROBE_MODELS || MODELS.join(",")
+)
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
 
 /**
  * Health-check each candidate model with one minimal request. Reveals which models
@@ -373,27 +299,13 @@ export async function classifyVideo(opts: {
   transcript: string;
 }): Promise<{ video_type: VideoType; speakers: string[] }> {
   const sample = sampleTranscript(opts.transcript);
-  // Classification + role resolution is a decision task — keep it deterministic so the
-  // host/guest ordering is stable, not a different guess each run.
-  const params = {
-    system: CLASSIFY_SYSTEM_PROMPT,
-    user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
-    maxTokens: 2048,
-    temperature: 0.2,
-  };
   let text: string;
   try {
-    ({ text } = CLASSIFY_USES_STRONG
-      ? // Opt-in strong classify model: a bounded window, then fall back to the fast MODEL.
-        // Both fit the note-creation route's 60s budget (this runs once, not per chunk).
-        await chatPreferred(
-          [
-            { model: CLASSIFY_MODEL, timeoutMs: 40000 },
-            { model: MODEL, timeoutMs: 15000 },
-          ],
-          params,
-        )
-      : await chat(params));
+    ({ text } = await chat({
+      system: CLASSIFY_SYSTEM_PROMPT,
+      user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
+      maxTokens: 2048,
+    }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error("[classifyVideo] LLM call failed:", err);
@@ -418,7 +330,6 @@ interface GenerateOpts {
   videoType: VideoType | null;
   speakers: string[];
   previousHeading: string | null;
-  previousSpeaker?: string | null;
   chunkText: string;
 }
 
@@ -432,54 +343,28 @@ export interface ChunkResult {
 }
 
 /**
- * The WRITE pass: turn a chunk into clean note sections. For a dialogue it is handed
- * the transcript ALREADY split into speaker-labelled turns (attribution done by the
- * diarize pass) and must keep those labels; for a monologue it gets the raw lines.
- * Returns the parsed note plus raw metadata (finish_reason, text length/preview, model)
- * so the diagnostic endpoint can see exactly what came back.
+ * Core chunk call. Returns the parsed note plus raw metadata (finish_reason,
+ * text length/preview, which model served) so the diagnostic endpoint can see
+ * exactly what came back. Throws RateLimitError on 429 and EmptyOutputError when
+ * the reply has no usable text.
  */
-async function runWrite(opts: GenerateOpts, turns?: DialogueTurn[]): Promise<ChunkResult> {
+async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   const isFirst = opts.chunkIndex === 0;
-  const user = chunkUserPrompt({
-    chunkIndex: opts.chunkIndex,
-    chunkTotal: opts.chunkTotal,
-    isFirst,
-    videoTitle: opts.videoTitle,
-    channel: opts.channel,
-    videoType: opts.videoType,
-    speakers: opts.speakers,
-    previousHeading: opts.previousHeading,
-    turns,
-    chunkText: turns ? undefined : opts.chunkText,
-  });
 
   let text: string;
   let finishReason: string | null;
   let model: string;
   try {
-    ({ text, finishReason, model } = DRAFT_USES_STRONG
-      ? // Opt-in strong write model: bounded window, then fall back to fast MODEL.
-        await chatPreferred(
-          [
-            { model: DRAFT_MODEL, timeoutMs: 30000 },
-            { model: MODEL, timeoutMs: 15000 },
-          ],
-          { system: SYSTEM_PROMPT, user, maxTokens: 4000, temperature: 0.3 },
-        )
-      : // Default: fast model with the normal fallback chain.
-        await chat({
-          system: SYSTEM_PROMPT,
-          user,
-          maxTokens: 4000,
-          timeoutMs: 22000, // diarize + write must both fit the 60s serverless limit
-          // Writing is a faithful transformation of given words with given labels — keep
-          // it low so it stays verbatim and doesn't drift.
-          temperature: 0.3,
-        }));
+    ({ text, finishReason, model } = await chat({
+      system: SYSTEM_PROMPT,
+      user: chunkUserPrompt({ ...opts, isFirst }),
+      maxTokens: 4000, // smaller = the call returns fast enough to fit the 60s limit
+      timeoutMs: 26000, // so a slow model can be abandoned and a second one still fits
+    }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error(
-      `[generateChunk] write call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
+      `[generateChunk] LLM call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
       err,
     );
     throw err;
@@ -494,11 +379,16 @@ async function runWrite(opts: GenerateOpts, turns?: DialogueTurn[]): Promise<Chu
 
   const parsed = parseJsonObject<GeneratedChunk>(text);
 
-  // Defensive shaping + deterministic cleanup (strip stray "Name:" prefixes, merge
-  // same-speaker paragraphs, fix name spelling) — never trust the model blindly.
+  // Defensive shaping — the model follows the prompt shape, but never trust it
+  // blindly: coerce to the structure the rest of the app relies on.
+  if (!Array.isArray(parsed.sections)) parsed.sections = [];
   if (!Array.isArray(parsed.speakers)) parsed.speakers = [];
-  const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
-  parsed.sections = shapeSections(parsed.sections, speakers);
+  parsed.sections = parsed.sections
+    .filter((s) => s && Array.isArray(s.content))
+    .map((s) => ({
+      ...s,
+      content: s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock),
+    }));
 
   return {
     parsed,
@@ -509,64 +399,14 @@ async function runWrite(opts: GenerateOpts, turns?: DialogueTurn[]): Promise<Chu
   };
 }
 
-/**
- * Generate the note section(s) for one transcript chunk.
- *
- * DIALOGUE: two isolated passes — (1) DIARIZE the raw lines (decide who speaks each
- * line, labels only, never rewriting), (2) WRITE the labelled turns up as clean verbatim
- * prose. Separating "who spoke" from "write it nicely" is what stops the mixed-voice
- * blocks and mechanical alternation.
- * MONOLOGUE: a single WRITE pass, then a light copy-edit.
- */
+/** Generate the note section(s) for one transcript chunk as structured blocks. */
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
-  const isDialogue = opts.videoType === "dialogue";
-
-  let write: ChunkResult;
-  if (isDialogue && (opts.speakers?.length ?? 0) >= 2) {
-    const lines = parseChunkLines(opts.chunkText);
-    const lineSpeakers = await diarizeChunk({
-      videoTitle: opts.videoTitle,
-      speakers: opts.speakers,
-      previousSpeaker: opts.previousSpeaker ?? null,
-      lines,
-    });
-    const turns = groupIntoTurns(lines, lineSpeakers, opts.speakers, opts.previousSpeaker ?? null);
-    write = await runWrite(opts, turns);
-  } else {
-    write = await runWrite(opts);
-  }
-
-  const parsed = write.parsed;
-  const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
-
-  if (!isDialogue) {
-    // Monologue: no attribution — just a light text cleanup pass.
-    await refineTexts(parsed.sections, opts.videoTitle, speakers);
-  }
-
-  // Consistency guarantees, always applied last:
-  if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
-  // Collapse any same-speaker micro-turns the writer over-split into one block.
-  for (const s of parsed.sections) s.content = stitchFragments(s.content);
-  backfillSectionTimestamps(parsed.sections);
-
-  return parsed;
+  return (await runChunk(opts)).parsed;
 }
 
-/** Same as generateChunk's write path, but returns the raw metadata for /api/diag. */
+/** Same call as generateChunk, but returns the raw metadata for /api/diag. */
 export async function generateChunkDebug(opts: GenerateOpts): Promise<ChunkResult> {
-  if (opts.videoType === "dialogue" && (opts.speakers?.length ?? 0) >= 2) {
-    const lines = parseChunkLines(opts.chunkText);
-    const lineSpeakers = await diarizeChunk({
-      videoTitle: opts.videoTitle,
-      speakers: opts.speakers,
-      previousSpeaker: opts.previousSpeaker ?? null,
-      lines,
-    });
-    const turns = groupIntoTurns(lines, lineSpeakers, opts.speakers, opts.previousSpeaker ?? null);
-    return runWrite(opts, turns);
-  }
-  return runWrite(opts);
+  return runChunk(opts);
 }
 
 /**
@@ -608,450 +448,14 @@ export async function generationSelfTest(): Promise<{
   };
 }
 
-/**
- * Exercises the FULL dialogue path (diarize → write) on a built-in sample and times
- * each pass separately — so /api/diag can confirm both passes run, the two voices land
- * on separate speakers, and the pair fits the serverless budget.
- */
-export async function generationSelfTestFull(): Promise<{
-  writeModel: string;
-  writeIsStrong: boolean;
-  sectionsReturned: number;
-  diarizeMs: number;
-  writeMs: number;
-  lineSpeakers: string[];
-  distinctSpeakers: number;
-}> {
-  const speakers = ["Host", "Guest"];
-  const lines = parseChunkLines(
-    [
-      "[00:00] So welcome everyone to the show, I'm really glad you could join us today.",
-      "[00:06] Thanks for having me, it's great to be here and I'm excited to dig in.",
-      "[00:12] Let's start at the beginning — how did you first get into this field?",
-      "[00:18] Well, honestly it was kind of an accident, I stumbled into it in college.",
-    ].join("\n"),
-  );
+function sanitizeBlock(b: NoteBlock): NoteBlock {
+  const out: NoteBlock = {
+    type: b.type,
+    text: b.text,
+  } as NoteBlock;
 
-  const t0 = Date.now();
-  const lineSpeakers = await diarizeChunk({
-    videoTitle: "Diagnostic sample",
-    speakers,
-    previousSpeaker: null,
-    lines,
-  });
-  const diarizeMs = Date.now() - t0;
-  const turns = groupIntoTurns(lines, lineSpeakers, speakers, null);
-
-  const t1 = Date.now();
-  const res = await runWrite(
-    {
-      chunkIndex: 0,
-      chunkTotal: 1,
-      videoTitle: "Diagnostic sample",
-      channel: "",
-      videoType: "dialogue",
-      speakers,
-      previousHeading: null,
-      chunkText: "",
-    },
-    turns,
-  );
-  const writeMs = Date.now() - t1;
-
-  return {
-    writeModel: res.model,
-    writeIsStrong: res.model !== MODEL,
-    sectionsReturned: res.parsed.sections.length,
-    diarizeMs,
-    writeMs,
-    lineSpeakers,
-    distinctSpeakers: new Set(lineSpeakers.filter(Boolean)).size,
-  };
-}
-
-// --- Deterministic cleanup: the structural fixes a copy-edit model still misses. ---
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Immediate-duplicate words we can safely collapse ("a a" → "a"). Excludes words
-// where a real double is valid ("that", "this", "had", "is").
-const SAFE_DUP = new Set([
-  "a", "the", "and", "to", "of", "in", "on", "when", "so", "it", "i", "you", "we", "um", "uh",
-]);
-
-// Role labels are not personal names, so we never "correct" a word toward them.
-const ROLE_LABELS = new Set([
-  "host", "guest", "interviewer", "narrator", "speaker", "moderator", "panelist", "cohost",
-]);
-
-/** Bounded Levenshtein (returns >max as max+1) — enough to spot a 1-char slip cheaply. */
-function editDistance(a: string, b: string, max: number): number {
-  if (Math.abs(a.length - b.length) > max) return max + 1;
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    const cur = [i];
-    let best = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
-      cur[j] = v;
-      if (v < best) best = v;
-    }
-    if (best > max) return max + 1;
-    prev = cur;
-  }
-  return prev[b.length];
-}
-
-/** Proper-name tokens drawn from the speaker labels — used to fix captions that mangle names. */
-function nameTokens(speakers: string[]): string[] {
-  const toks = new Set<string>();
-  for (const s of speakers) {
-    for (const raw of s.split(/\s+/)) {
-      const t = raw.replace(/[^A-Za-z'’-]/g, "");
-      // Only real, capitalised names of a useful length — skip roles and short particles.
-      if (t.length >= 4 && /^[A-Z]/.test(t) && !ROLE_LABELS.has(t.toLowerCase())) toks.add(t);
-    }
-  }
-  return [...toks];
-}
-
-/** True when `word` looks like a mis-transcription of the canonical `name`. Conservative. */
-function isNameMisspelling(word: string, name: string): boolean {
-  if (word === name) return false;
-  const w = word.toLowerCase();
-  const n = name.toLowerCase();
-  if (w === n) return false; // same letters, different case — leave casing alone
-  // Truncation, e.g. "Andre" for "Andrej".
-  if (w.length >= 4 && n.startsWith(w) && n.length - w.length <= 2) return true;
-  // Near-miss spelling for longer names, e.g. "Stephany" for "Stephanie".
-  if (name.length >= 5 && Math.abs(w.length - n.length) <= 1 && editDistance(w, n, 1) <= 1) return true;
-  return false;
-}
-
-/**
- * Snap capitalised words that are near-misses of a known speaker name to the exact
- * spelling from the speaker list (e.g. "Andre" → "Andrej"). Only touches proper-noun-
- * position words and only when confidently close, so ordinary words are never altered.
- */
-function correctNames(text: string, tokens: string[]): string {
-  if (!tokens.length) return text;
-  return text.replace(/\b[A-Z][A-Za-z'’-]{2,}\b/g, (word) => {
-    for (const name of tokens) {
-      if (isNameMisspelling(word, name)) return name;
-    }
-    return word;
-  });
-}
-
-/** Clean one block's text: drop a stray "Name:" prefix, filler, and stutters; tidy spacing. */
-function cleanText(text: string, speakers: string[]): string {
-  let t = typeof text === "string" ? text : "";
-
-  // Strip a leading speaker prefix the model wrongly put in the text (repeat for doubles).
-  const names = speakers.filter(Boolean).map(escapeRegExp);
-  if (names.length) {
-    const re = new RegExp(`^\\s*(?:${names.join("|")})\\s*:\\s*`, "i");
-    let prev: string;
-    do {
-      prev = t;
-      t = t.replace(re, "");
-    } while (t !== prev);
-  }
-
-  // Remove standalone filler tokens ("um"/"uh" are never real words).
-  t = t.replace(/\b(?:um|uh)\b[,]?/gi, " ");
-  // Collapse immediate exact duplicate words, but only the safe set.
-  t = t.replace(/\b(\w+)(\s+\1\b)+/gi, (m, w: string) => (SAFE_DUP.has(w.toLowerCase()) ? w : m));
-  // Fix names the captions mangled ("Andre" → "Andrej") using the known speaker spellings.
-  t = correctNames(t, nameTokens(speakers));
-  // Tidy: collapse spaces, remove space before punctuation, strip leading punctuation/space.
-  t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").replace(/^[\s,]+/, "").trim();
-  if (t) t = t[0].toUpperCase() + t.slice(1);
-  return t;
-}
-
-// Two adjacent same-speaker paragraphs whose combined length stays under this are
-// treated as one over-split turn and merged (e.g. "Yeah, hello." + "I'm excited to be
-// here…"). Larger blocks are real, deliberately separate paragraphs and stay apart.
-const MICRO_TURN_CHARS = 200;
-
-/**
- * Join an adjacent SAME-SPEAKER paragraph into the previous one when either (a) the
- * previous text didn't end a sentence (a cut-off caption), or (b) the two together are
- * short enough to be one turn the model wrongly split. Never merges across a speaker
- * change, and leaves genuinely long paragraphs separate so each keeps its own timestamp.
- */
-function stitchFragments(content: NoteBlock[]): NoteBlock[] {
-  const out: NoteBlock[] = [];
-  for (const b of content) {
-    const last = out[out.length - 1];
-    const sameSpeaker = last ? (last.speaker ?? "") === (b.speaker ?? "") : false;
-    const bothParagraph = last ? last.type === "paragraph" && b.type === "paragraph" : false;
-    const prevUnfinished = last ? !/[.!?…"')\]]\s*$/.test(last.text) : false;
-    const combinedShort = last ? last.text.length + b.text.length <= MICRO_TURN_CHARS : false;
-    if (last && bothParagraph && sameSpeaker && (prevUnfinished || combinedShort)) {
-      last.text = `${last.text} ${b.text}`.replace(/\s{2,}/g, " ").trim();
-      continue; // keep the earlier block's timestamp
-    }
-    out.push({ ...b });
-  }
-  return out;
-}
-
-function sanitizeBlock(b: NoteBlock, speakers: string[]): NoteBlock {
-  const out: NoteBlock = { type: b.type, text: cleanText(b.text, speakers) } as NoteBlock;
   if (b.speaker) out.speaker = b.speaker;
   if (b.timestamp) out.timestamp = b.timestamp;
+
   return out;
-}
-
-/** Shape + clean raw model sections into the structure the app relies on. */
-function shapeSections(raw: unknown, speakers: string[]): Section[] {
-  const list = Array.isArray(raw) ? (raw as Section[]) : [];
-  return list
-    .filter((s) => s && Array.isArray(s.content))
-    .map((s) => {
-      let content = s.content
-        .filter((b) => b && typeof b.text === "string")
-        .map((b) => sanitizeBlock(b, speakers))
-        .filter((b) => b.text.length > 0);
-      content = stitchFragments(content);
-      return { ...s, content };
-    })
-    .filter((s) => s.content.length > 0);
-}
-
-/** For a dialogue, ensure EVERY block has a speaker: an unlabelled block continues the prior turn. */
-function forwardFillSpeakers(sections: Section[], seed: string | null | undefined): void {
-  let last = seed || undefined;
-  for (const s of sections) {
-    for (const b of s.content) {
-      if (b.speaker) last = b.speaker;
-      else if (last) b.speaker = last;
-    }
-  }
-}
-
-/** Ensure every section has a timestamp_label (fall back to its first block's timestamp). */
-function backfillSectionTimestamps(sections: Section[]): void {
-  for (const s of sections) {
-    if (!s.timestamp_label) {
-      const firstTs = s.content.find((b) => b.timestamp)?.timestamp;
-      if (firstTs) s.timestamp_label = firstTs;
-    }
-  }
-}
-
-/**
- * Second pass: a TEXT-ONLY copy-edit. We flatten every block's text to an indexed
- * map, let the model clean each line, then write ONLY the text back — so the pass
- * can never drop or change a timestamp, speaker, or the structure (the source of
- * page-to-page inconsistency). Best-effort: any failure keeps the draft text.
- */
-async function refineTexts(sections: Section[], title: string, speakers: string[]): Promise<boolean> {
-  const blocks: NoteBlock[] = [];
-  for (const s of sections) for (const b of s.content) blocks.push(b);
-  if (!blocks.length) return false;
-
-  const map: Record<string, string> = {};
-  blocks.forEach((b, i) => (map[i] = b.text));
-
-  try {
-    const { text } = await chat({
-      system: REFINE_SYSTEM_PROMPT,
-      user: refineUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(map) }),
-      maxTokens: 4000,
-      timeoutMs: 12000, // fast: it runs after the draft, and both must fit 60s
-      temperature: 0.5, // mechanical cleanup — kept lower to protect verbatim wording
-    });
-    const cleaned = parseJsonObject<Record<string, unknown>>(text);
-    let applied = false;
-    blocks.forEach((b, i) => {
-      const v = cleaned[i];
-      if (typeof v === "string" && v.trim()) {
-        b.text = v.trim();
-        applied = true;
-      }
-    });
-    return applied;
-  } catch {
-    return false; // keep the draft text — never let cleanup block a note
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Diarization (dialogue): decide who speaks each transcript line in a dedicated,
-// labels-only pass, then group lines into per-speaker turns for the write pass.
-// This isolates "who spoke" from "write it up", which is what removes the
-// mixed-voice blocks and mechanical alternation.
-// ---------------------------------------------------------------------------
-
-/** A single transcript line: its "[m:ss]" marker and the caption text. */
-export interface ChunkLine {
-  ts: string;
-  text: string;
-}
-
-/** Parse a raw "[m:ss] text" transcript chunk into structured lines. */
-export function parseChunkLines(chunkText: string): ChunkLine[] {
-  return chunkText
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => {
-      const m = l.match(/^\[([0-9:]+)\]\s*(.*)$/);
-      return m ? { ts: m[1], text: m[2] } : { ts: "", text: l };
-    });
-}
-
-/** "[m:ss]" / "[h:mm:ss]" → seconds; NaN when unparseable. */
-function tsToSeconds(ts: string): number {
-  const parts = ts.split(":").map(Number);
-  if (parts.some((n) => Number.isNaN(n))) return NaN;
-  return parts.reduce((acc, n) => acc * 60 + n, 0);
-}
-
-/**
- * Number the lines for the diarizer and mark a ⏸ where a noticeable pause precedes a
- * line — a silence gap is the strongest turn-change cue we can recover from timestamps.
- * Approximated as (gap between line starts) minus the previous line's spoken length
- * (~13 chars/sec); a leftover of ≥ ~1.5s is treated as a pause.
- */
-function buildNumberedLines(lines: ChunkLine[]): string {
-  const CHARS_PER_SEC = 13;
-  const PAUSE_SECS = 1.5;
-  return lines
-    .map((l, i) => {
-      let pause = false;
-      if (i > 0) {
-        const prev = tsToSeconds(lines[i - 1].ts);
-        const cur = tsToSeconds(l.ts);
-        if (!Number.isNaN(prev) && !Number.isNaN(cur)) {
-          const spoken = lines[i - 1].text.length / CHARS_PER_SEC;
-          if (cur - prev - spoken >= PAUSE_SECS) pause = true;
-        }
-      }
-      return `${i} | ${pause ? "⏸ " : ""}[${l.ts}] ${l.text}`;
-    })
-    .join("\n");
-}
-
-/** Map a model-returned speaker string to a canonical label from the list, or "" if none. */
-function normalizeSpeaker(raw: string, speakers: string[]): string {
-  const r = raw.trim().toLowerCase();
-  if (!r) return "";
-  const exact = speakers.find((s) => s.toLowerCase() === r);
-  if (exact) return exact;
-  // A first-name / partial match ("Andrej" for "Andrej Karpathy", or vice-versa).
-  const partial = speakers.find((s) => {
-    const sl = s.toLowerCase();
-    return sl.includes(r) || r.includes(sl) || sl.split(/\s+/).some((tok) => tok === r);
-  });
-  return partial ?? "";
-}
-
-/**
- * Turn the model's list of TURN-STARTS ([{startLine, speaker}]) into a valid ordered
- * list of change-points. Drops out-of-range / invented-name / non-increasing entries and
- * dedupes by line — so the segmentation is always monotonic and uses only known speakers.
- */
-function normalizeTurnStarts(
-  raw: Array<{ startLine?: unknown; speaker?: unknown }>,
-  lineCount: number,
-  speakers: string[],
-): Array<{ startLine: number; speaker: string }> {
-  const seen = new Set<number>();
-  const starts: Array<{ startLine: number; speaker: string }> = [];
-  for (const e of raw) {
-    const i = Number(e.startLine);
-    if (!Number.isInteger(i) || i < 0 || i >= lineCount || seen.has(i)) continue;
-    const sp = typeof e.speaker === "string" ? normalizeSpeaker(e.speaker, speakers) : "";
-    if (!sp) continue;
-    seen.add(i);
-    starts.push({ startLine: i, speaker: sp });
-  }
-  starts.sort((a, b) => a.startLine - b.startLine);
-  // Collapse a change that doesn't actually change the speaker (same as the one before it).
-  const out: Array<{ startLine: number; speaker: string }> = [];
-  for (const s of starts) {
-    if (out.length && out[out.length - 1].speaker === s.speaker) continue;
-    out.push(s);
-  }
-  return out;
-}
-
-/**
- * Decide the speaker of every line via a dedicated CHANGE-POINT call: the model marks the
- * few lines where a new speaker takes over, and every line between two change-points is the
- * same speaker. This makes long same-speaker runs the default and a switch the exception —
- * the opposite of per-line labelling, which drifts into mechanical alternation.
- * Best-effort: on any failure the whole chunk falls back to the seed speaker (no alternation).
- */
-async function diarizeChunk(opts: {
-  videoTitle: string;
-  speakers: string[];
-  previousSpeaker: string | null;
-  lines: ChunkLine[];
-}): Promise<string[]> {
-  const { videoTitle, speakers, previousSpeaker, lines } = opts;
-  const seed =
-    previousSpeaker && speakers.includes(previousSpeaker) ? previousSpeaker : speakers[0] ?? "";
-  if (lines.length === 0) return [];
-  if (speakers.length < 2) return lines.map(() => seed);
-
-  let starts: Array<{ startLine: number; speaker: string }> = [];
-  try {
-    const { text } = await chat({
-      system: DIARIZE_SYSTEM_PROMPT,
-      user: diarizeUserPrompt({
-        videoTitle,
-        speakers,
-        previousSpeaker,
-        numberedLines: buildNumberedLines(lines),
-      }),
-      maxTokens: 1200, // just the few turn-starts, not one entry per line
-      timeoutMs: 15000, // diarize + write must both fit the 60s serverless limit
-      temperature: 0.1, // we want the single most likely, stable segmentation
-    });
-    const arr = parseJsonArray<{ startLine?: unknown; speaker?: unknown }>(text);
-    starts = normalizeTurnStarts(arr, lines.length, speakers);
-  } catch {
-    starts = []; // fall back entirely to the seed speaker
-  }
-
-  // Walk the lines, switching speaker only at a valid change-point. Lines before the first
-  // change-point belong to the seed (the previous page's speaker, else the host).
-  const out: string[] = [];
-  let cur = starts.length && starts[0].startLine === 0 ? starts[0].speaker : seed;
-  let next = 0;
-  for (let i = 0; i < lines.length; i++) {
-    while (next < starts.length && starts[next].startLine === i) {
-      cur = starts[next].speaker;
-      next++;
-    }
-    out.push(cur);
-  }
-  return out;
-}
-
-/** Group consecutive same-speaker lines into turns for the write pass. */
-function groupIntoTurns(
-  lines: ChunkLine[],
-  lineSpeakers: string[],
-  speakers: string[],
-  previousSpeaker: string | null,
-): DialogueTurn[] {
-  const fallback =
-    previousSpeaker && speakers.includes(previousSpeaker) ? previousSpeaker : speakers[0] ?? "";
-  const turns: DialogueTurn[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const sp = lineSpeakers[i] || (turns.length ? turns[turns.length - 1].speaker : fallback);
-    const last = turns[turns.length - 1];
-    if (last && last.speaker === sp) last.lines.push(lines[i]);
-    else turns.push({ speaker: sp, lines: [lines[i]] });
-  }
-  return turns;
 }

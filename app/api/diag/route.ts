@@ -5,7 +5,7 @@ import {
   llmSelfTest,
   llmRawProbes,
   generateChunkDebug,
-  generationSelfTestFull,
+  generationSelfTest,
   MODELS,
 } from "@/lib/llm";
 import type { VideoType } from "@/lib/types";
@@ -75,7 +75,7 @@ export async function GET(request: Request) {
   let generation: Record<string, unknown> | undefined;
   if (params.get("gen") === "1") {
     try {
-      generation = { ok: true, ...(await generationSelfTestFull()) };
+      generation = { ok: true, ...(await generationSelfTest()) };
     } catch (err) {
       generation = {
         ok: false,

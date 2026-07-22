@@ -17,13 +17,12 @@ import { useRouter } from "next/navigation";
  * tabs keep hammering). To prevent that, tabs elect ONE leader via localStorage;
  * only the leader makes requests. If the leader tab closes, another takes over.
  *
- * Pacing respects NEXT_PUBLIC_LLM_RPM (default 15/min). Each chunk makes TWO model
- * calls (a draft + a copy-edit pass), so 15 chunks/min ≈ 30 requests/min — a safe
- * margin under the provider's ~40/min cap. 429s back off. After each chunk it calls
+ * Pacing respects NEXT_PUBLIC_LLM_RPM (default 30/min), a safe margin under the
+ * provider's ~40/min cap, and 429s back off. After each chunk it calls
  * router.refresh() so whatever page is open (the reader, the library) updates.
  */
 const RPM =
-  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 15;
+  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 30;
 const MIN_INTERVAL_MS = Math.ceil(60000 / RPM) + 1000;
 const POLL_MS = 20000;
 const LEADER_KEY = "verbatim:gen-leader";

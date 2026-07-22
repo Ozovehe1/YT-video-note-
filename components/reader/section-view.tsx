@@ -1,11 +1,10 @@
 import type { NoteSection, NoteBlock } from "@/lib/types";
 import { normalizeTimestamp } from "@/lib/utils";
 
-function BlockView({ b, showSpeaker }: { b: NoteBlock; showSpeaker: boolean }) {
-  const speaker =
-    b.speaker && showSpeaker ? (
-      <span className="font-semibold text-oxblood">{b.speaker}: </span>
-    ) : null;
+function BlockView({ b }: { b: NoteBlock }) {
+  const speaker = b.speaker ? (
+    <span className="font-semibold text-oxblood">{b.speaker}: </span>
+  ) : null;
   const tsValue = normalizeTimestamp(b.timestamp);
   const ts = tsValue ? (
     <span className="ml-1 font-mono text-[0.72em] text-muted">[{tsValue}]</span>
@@ -38,24 +37,14 @@ function BlockView({ b, showSpeaker }: { b: NoteBlock; showSpeaker: boolean }) {
   );
 }
 
-type BlockWithMeta = { block: NoteBlock; showSpeaker: boolean };
-
 export function SectionView({ section }: { section: NoteSection }) {
-  // Show a speaker label only when it changes from the previous block (in reading order).
-  let prevSpeaker: string | undefined;
-  const withMeta: BlockWithMeta[] = section.content.map((block) => {
-    const showSpeaker = !!block.speaker && block.speaker !== prevSpeaker;
-    if (block.speaker) prevSpeaker = block.speaker;
-    return { block, showSpeaker };
-  });
-
   // Group consecutive bullets into a single <ul>.
-  const groups: { bullets: boolean; items: BlockWithMeta[] }[] = [];
-  for (const m of withMeta) {
+  const groups: { bullets: boolean; items: NoteBlock[] }[] = [];
+  for (const b of section.content) {
     const last = groups[groups.length - 1];
-    const isBullet = m.block.type === "bullet";
-    if (last && last.bullets === isBullet) last.items.push(m);
-    else groups.push({ bullets: isBullet, items: [m] });
+    const isBullet = b.type === "bullet";
+    if (last && last.bullets === isBullet) last.items.push(b);
+    else groups.push({ bullets: isBullet, items: [b] });
   }
 
   return (
@@ -71,14 +60,14 @@ export function SectionView({ section }: { section: NoteSection }) {
       {groups.map((g, i) =>
         g.bullets ? (
           <ul key={i} className="mb-4 ml-5 list-disc marker:text-oxblood/60">
-            {g.items.map((m, j) => (
-              <BlockView key={j} b={m.block} showSpeaker={m.showSpeaker} />
+            {g.items.map((b, j) => (
+              <BlockView key={j} b={b} />
             ))}
           </ul>
         ) : (
           <div key={i}>
-            {g.items.map((m, j) => (
-              <BlockView key={j} b={m.block} showSpeaker={m.showSpeaker} />
+            {g.items.map((b, j) => (
+              <BlockView key={j} b={b} />
             ))}
           </div>
         ),
