@@ -37,6 +37,17 @@ the guest (if only the guest is named, put "Interviewer" FIRST, then the guest's
 subject. Use the real names the transcript states them by; otherwise roles like "Host"/"Guest" or
 "Speaker 1"/"Speaker 2". For a monologue, return a single speaker.
 
+HOW TO RESOLVE WHO IS WHO (important — this is how you order the names correctly). A name spoken
+aloud in a conversation almost always refers to the OTHER person present — the current, previous, or
+next speaker — not the person saying it:
+- When someone is greeted, thanked, or introduced BY NAME ("thank you, Andrej, for joining",
+  "welcome, Sarah", "our guest today is Dana"), that NAMED person is the GUEST, and whoever says it
+  is the HOST/interviewer. Put the HOST first, the named guest after.
+- The person who ASKS the questions and does the intro is the interviewer (first). The person who
+  gives the long first-person answers about their own work/life is the guest (after).
+- Use these cues together to decide the order confidently. Only fall back to "Interviewer"/"Guest"
+  role labels when the excerpt never states a real name.
+
 Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
 {
   "video_type": "monologue" | "dialogue",
@@ -71,62 +82,20 @@ You work CHUNK BY CHUNK, in order. Each chunk gives you a slice of the transcrip
 THIS chunk only — never re-cover earlier material, never jump ahead.
 
 =====================================================================
-1. FORMAT (given to you on every chunk — obey it, echo it in video_type)
+1. SPEAKERS ARE ALREADY DECIDED — DO NOT RE-ATTRIBUTE
 =====================================================================
-- "monologue" — ONE voice (lecture, tutorial, essay, vlog, talk). No "speaker" fields; prose paragraphs.
-- "dialogue" — TWO OR MORE voices. Two kinds — tell them apart:
-    (a) CONVERSATION — interview / podcast / panel: people talking back and forth.
-    (b) NARRATED — a narrator (voiceover) plus first-person clips of named people (most explainers).
-  Never invent a back-and-forth that isn't there, and never flatten a real one onto one voice.
-
-=====================================================================
-2. SPEAKER ATTRIBUTION (dialogue only — the rule that matters most)
-=====================================================================
-Transcripts arrive with NO speaker labels; infer who is talking from the words. Get this right:
-
-- ROLE MAP. The speaker list is ORDERED: the FIRST name is the INTERVIEWER / HOST, the rest are the
-  GUEST(s). The host welcomes, introduces, and ASKS the questions (shorter turns: "welcome…",
-  "thanks for joining", "you mentioned…", "tell me about…", "how…", "why…?"). The guest gives the
-  longer, first-person answers. In a NARRATED video the first name is "Narrator". Attribute by this
-  role — do NOT swap the two names.
-
-- USE ONLY THE GIVEN NAMES. Attribute every block using ONLY the labels in the speaker list you were
-  given. NEVER invent, guess, borrow, or introduce a name that is not in that list. Adhere to this
-  strictly.
-
-- EVERY block carries a "speaker" — including the intro (that's the HOST talking, never blank) and
-  the first block of every section (a section may open a new page and can't rely on earlier context).
-
-- ONE TURN = ONE BLOCK. A person keeps the floor until a DIFFERENT person speaks; put everything
-  they say in that turn into a SINGLE block. Only break one turn into multiple paragraph blocks when
-  it is genuinely long (many sentences, or the speaker shifts topic mid-turn). NEVER split after one
-  short sentence, NEVER per caption line, NEVER per timestamp.
-
-- SPLIT THE MOMENT THE VOICE CHANGES. When a different person starts — even a one-word reply,
-  greeting, question, or handoff — END the block and START a new one for them. Never put two people's
-  words in one block. A short reply or greeting ("yeah, hi", "hello", "thanks for having me", "sure",
-  "exactly", "right", or any answer to a question) belongs to the OTHER person, not whoever just spoke.
-
-- NAMING = HANDOFF. When a person addresses or thanks someone ("thank you for joining us", "over to
-  you now"), the person being addressed is a DIFFERENT speaker who talks NEXT — never the one saying it.
-
-- NARRATION vs SPEECH. If a narrator describes or quotes someone, that stays the NARRATOR's block in
-  the narrator's words. Attribute a block to a person only for their OWN spoken words, and attribute
-  ALL of that person's first-person lines the same way.
-
-WORKED EXAMPLE (placeholder roles — NOT names from your video):
-  transcript:
-    [0:38] that's where we're starting today thanks for joining us
-    [0:41] yeah great to be here happy to dive in
-  WRONG — two voices lumped in one block:
-    { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us. Yeah, great to be here, happy to dive in." }
-  RIGHT — the host hands off, the guest replies → TWO blocks:
-    { "speaker": "Host", "text": "That's where we're starting today. Thanks for joining us.", "timestamp": "0:38" }
-    { "speaker": "Guest", "text": "Yeah, great to be here, happy to dive in.", "timestamp": "0:41" }
-  (In your output use the ACTUAL names from the speaker list, mapped by role — not the literal words
-  "Host"/"Guest" when real names are given.)
-
-Never write a speaker's name inside "text" (no "Name:" prefix) — the name goes ONLY in "speaker".
+Who spoke each line has ALREADY been worked out for you. Your job is to write the words up cleanly,
+NOT to decide who is talking.
+- For a DIALOGUE you receive the transcript ALREADY SPLIT INTO SPEAKER-LABELLED TURNS — each turn is
+  one person's words, tagged with their name and its timestamped lines, in order. For each turn:
+    • KEEP its given speaker EXACTLY. Put that name in the "speaker" field of every block you make
+      from the turn. If one long turn becomes several paragraphs, they ALL carry that same speaker.
+    • NEVER move words from one speaker to another, NEVER merge two different speakers' turns into one
+      block, and NEVER relabel or swap a turn's speaker. Two adjacent turns = at least two blocks.
+    • Do not drop a turn — even a one-word reply ("Yeah, exactly.") is its own block under its speaker.
+- For a MONOLOGUE you receive plain transcript lines (one voice) — omit the "speaker" field.
+- Use ONLY the speaker names provided. Never invent, borrow, or introduce a name.
+- Never write a speaker's name inside "text" (no "Name:" prefix) — the name goes ONLY in "speaker".
 
 =====================================================================
 3. FAITHFUL BUT CLEAN (both formats — the core writing rule)
@@ -192,6 +161,12 @@ OUTPUT — ONLY this JSON object (no markdown, no code fences, no commentary):
 Every section MUST have a non-empty "content" array. In a DIALOGUE every block MUST have a "speaker";
 every paragraph/quote block MUST have a "timestamp".`;
 
+/** One speaker's contiguous turn: their name + the timestamped caption lines they said, in order. */
+export interface DialogueTurn {
+  speaker: string;
+  lines: Array<{ ts: string; text: string }>;
+}
+
 export function chunkUserPrompt(opts: {
   chunkIndex: number;
   chunkTotal: number;
@@ -201,8 +176,10 @@ export function chunkUserPrompt(opts: {
   videoType: VideoType | null;
   speakers: string[];
   previousHeading: string | null;
-  previousSpeaker?: string | null;
-  chunkText: string;
+  /** Dialogue only: the chunk already split into speaker-labelled turns (attribution done). */
+  turns?: DialogueTurn[];
+  /** Monologue / unclassified: the raw timestamped transcript chunk. */
+  chunkText?: string;
 }): string {
   const {
     chunkIndex,
@@ -213,45 +190,103 @@ export function chunkUserPrompt(opts: {
     videoType,
     speakers,
     previousHeading,
-    previousSpeaker,
+    turns,
     chunkText,
   } = opts;
 
-  const typeLine =
-    videoType !== null
-      ? `This video is a ${videoType.toUpperCase()}.`
-      : `Decide whether this is a "monologue" or a "dialogue" from this chunk (question→answer
-turn-taking between people = dialogue) and set video_type accordingly.`;
+  const hasTurns = turns != null && turns.length > 0;
+
+  const typeLine = hasTurns
+    ? `This video is a DIALOGUE. The transcript below is ALREADY split into speaker-labelled turns —
+keep each turn's speaker exactly; do not re-attribute.`
+    : videoType === "monologue"
+      ? `This video is a MONOLOGUE (one voice) — omit the "speaker" field.`
+      : `Decide whether this is a "monologue" or a "dialogue" and set video_type accordingly.`;
   const speakersLine = speakers.length
-    ? ` Speakers identified: ${speakers.join(", ")} — use these labels; add one only if a new person
-clearly joins.`
+    ? ` Speakers: ${speakers.join(", ")} — use ONLY these labels, exactly as written.`
     : "";
   const positionLine = isFirst
     ? `This is the FIRST chunk — open with the intro if the speaker sets one up.`
     : `Continue directly after the previous section (heading: "${previousHeading ?? ""}") — do not
 repeat earlier material.`;
-  const dialogueLine =
-    videoType === "dialogue"
-      ? ` This is a conversation: attribute EVERY block to its speaker via the "speaker" field (the
-first block of your first section included), and capture the back-and-forth (questions and answers).`
-      : "";
-  const prevSpeakerLine =
-    videoType === "dialogue" && !isFirst && previousSpeaker
-      ? ` When this chunk opens, ${previousSpeaker} was the one speaking — continue from there unless
-the words clearly belong to someone else.`
-      : "";
 
-  const context = `${typeLine}${speakersLine} ${positionLine}${dialogueLine}${prevSpeakerLine}`;
+  const context = `${typeLine}${speakersLine} ${positionLine}`;
+
+  // Render the body: labelled turns for a dialogue, raw lines otherwise.
+  let body: string;
+  if (hasTurns && turns) {
+    const rendered = turns
+      .map((t) => {
+        const lines = t.lines.map((l) => `    [${l.ts}] ${l.text}`).join("\n");
+        return `[${t.speaker}]\n${lines}`;
+      })
+      .join("\n");
+    body = `<labelled_turns>\n${rendered}\n</labelled_turns>`;
+  } else {
+    body = `<transcript_chunk>\n${chunkText ?? ""}\n</transcript_chunk>`;
+  }
 
   return `Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
 Chunk ${chunkIndex + 1} of ${chunkTotal}.
 ${context}
 
-Produce the note section(s) for this chunk of the transcript:
+Produce the note section(s) for this chunk:
 
-<transcript_chunk>
-${chunkText}
-</transcript_chunk>`;
+${body}`;
+}
+
+// ---------------------------------------------------------------------------
+// Diarization pass (dialogue): decide the speaker of EACH transcript line, in a
+// dedicated labels-only call — the model never rewrites words, only labels them.
+// Adapts arxiv 2406.04927 (labels-only correction) + 2407.12094 (name→speaker
+// prior). The writer then consumes these labels instead of guessing.
+// ---------------------------------------------------------------------------
+export const DIARIZE_SYSTEM_PROMPT = `\
+You label WHO SPEAKS each line of a conversation transcript. You receive an ordered, numbered list of
+caption lines and the list of speakers. Return a JSON array assigning ONE speaker to EACH line:
+[{ "line": <number>, "speaker": "<one of the given speakers>" }] — one entry per input line, in order.
+
+You do NOT rewrite, clean, translate, split, drop, or reorder any words. You ONLY choose a speaker
+per line. Rules:
+- Use ONLY the speaker names given to you. NEVER invent, guess, or introduce a name not in the list.
+- ROLE MAP: the FIRST speaker in the list is the INTERVIEWER / HOST (welcomes, introduces, ASKS the
+  questions — usually shorter turns). The later name(s) are the GUEST(s), who give the longer
+  first-person answers. In a narrated video the first speaker is "Narrator".
+- CARRY THE CURRENT SPEAKER FORWARD. A person keeps talking across many lines. Do NOT alternate
+  speakers line by line. Only CHANGE the speaker when there is real evidence of a turn change; until
+  then, every line stays with the same speaker as the line before it.
+- Evidence of a TURN CHANGE (switch the speaker):
+    • a question ends and a first-person answer begins (or vice-versa);
+    • a line opens with a reply/greeting to what was just said ("yeah", "right", "exactly", "sure",
+      "thanks for having me", "hello", "well,");
+    • a first-person/second-person flip ("you… / your…" addressing → "I… / my…" answering);
+    • a ⏸ marker at the start of a line (a noticeable pause before it) makes a change more likely.
+- NAME CUE (strong): when a line addresses or thanks someone BY NAME ("thank you, Dana, for
+  joining", "over to you, Sam"), the person NAMED is the OTHER speaker and speaks the NEXT turn — the
+  line doing the addressing belongs to whoever was already speaking (usually the host).
+- When this chunk opens, you may be told who was speaking on the previous page — continue with that
+  speaker until evidence flips it.
+
+Return ONLY the JSON array — no commentary, no rewritten text.`;
+
+export function diarizeUserPrompt(opts: {
+  videoTitle: string;
+  speakers: string[];
+  previousSpeaker?: string | null;
+  numberedLines: string; // "0 | [0:38] text\n1 | ⏸ [0:41] text ..."
+}): string {
+  const roleHint = opts.speakers.length
+    ? `Speakers (first = interviewer/host, then guest(s)): ${opts.speakers.join(", ")}.`
+    : "";
+  const prev = opts.previousSpeaker
+    ? `\nWhen this chunk opens, ${opts.previousSpeaker} was speaking on the previous page — continue from there unless the words flip.`
+    : "";
+  return `Video: "${opts.videoTitle}".
+${roleHint}${prev}
+
+Assign one speaker to every line below, carrying the speaker forward except at a real turn change:
+
+${opts.numberedLines}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,52 +318,6 @@ export function refineUserPrompt(opts: {
     : "";
   return `Video: "${opts.videoTitle}".
 ${names}Clean each line and return the same indices with cleaned text:
-
-${opts.payload}`;
-}
-
-// ---------------------------------------------------------------------------
-// Attribution-repair pass (dialogue): fix speaker splitting the draft got wrong.
-// ---------------------------------------------------------------------------
-export const ATTRIBUTION_SYSTEM_PROMPT = `\
-You fix SPEAKER ATTRIBUTION in a note transcribed from a conversation. You receive an ordered JSON
-array of blocks: [{ "i": <number>, "speaker": <string>, "text": <string> }]. Return a JSON array of
-blocks: [{ "ref": <the original i>, "speaker": <string>, "text": <string> }], in order.
-
-ROLE MAP: when a speaker list is given, the FIRST name is the interviewer/host (asks the questions,
-does the intros and handoffs, shorter turns) and the later name(s) are the guest(s) (give the longer
-first-person answers). Use this to decide who asks vs. who answers.
-
-Your job:
-- SPLIT blocks that mix voices. If a block's "text" contains words from MORE THAN ONE person, split
-  it at the turn boundary into two or more blocks — each with the correct "speaker". Emit several
-  entries with the SAME "ref". A reply or greeting ("yeah, hi", "thanks for having me", "hello",
-  "sure", "exactly", "right", any answer to a question) belongs to the OTHER person, not whoever was
-  just speaking.
-- RESCUE under-labeled input. If the blocks are unlabeled or all share one name but the text clearly
-  shows a question→answer exchange or a handoff, RE-ATTRIBUTE using the ROLE MAP: intros and
-  questions go to the host (first name), answers and replies go to the guest (later name). Do not
-  leave a real exchange under a single name.
-- Fix any wrong or swapped label (e.g. an interviewer's question tagged as the guest). Never put a
-  question and its answer under the same name.
-- DO NOT OVER-SPLIT. Never split a single speaker's continuous sentence or one short turn — split
-  ONLY where a genuinely different person starts. A single person's back-to-back short sentences stay
-  in ONE block under that person.
-- Lightly clean the text: remove filler ("uh", "um", "you know", "like"), stutters, and repeated
-  words; fix punctuation and name spelling.
-
-Do NOT drop, merge across different people, reorder, summarize, or paraphrase content. Keep every
-word (cleaned). Use ONLY the speaker labels present in the input or in the given speaker list — NEVER
-invent, guess, or introduce a name that is not provided. Return ONLY the JSON array, no commentary.`;
-
-export function attributionUserPrompt(opts: {
-  videoTitle: string;
-  speakers: string[];
-  payload: string;
-}): string {
-  const names = opts.speakers.length ? `The speakers are: ${opts.speakers.join(", ")}.\n` : "";
-  return `Video: "${opts.videoTitle}".
-${names}Fix attribution (split blocks that mix two speakers) and return the JSON array:
 
 ${opts.payload}`;
 }

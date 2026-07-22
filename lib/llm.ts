@@ -5,8 +5,9 @@ import {
   classifyUserPrompt,
   REFINE_SYSTEM_PROMPT,
   refineUserPrompt,
-  ATTRIBUTION_SYSTEM_PROMPT,
-  attributionUserPrompt,
+  DIARIZE_SYSTEM_PROMPT,
+  diarizeUserPrompt,
+  type DialogueTurn,
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
@@ -364,9 +365,9 @@ export async function classifyVideo(opts: {
       system: CLASSIFY_SYSTEM_PROMPT,
       user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
       maxTokens: 2048,
-      // Room to reason about turn-taking / who the speakers are, rather than latching
-      // onto the intro's solo-host reading.
-      temperature: 0.7,
+      // Classification + role resolution is a decision task — keep it deterministic so the
+      // host/guest ordering is stable, not a different guess each run.
+      temperature: 0.2,
     }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
@@ -406,46 +407,54 @@ export interface ChunkResult {
 }
 
 /**
- * Core chunk call. Returns the parsed note plus raw metadata (finish_reason,
- * text length/preview, which model served) so the diagnostic endpoint can see
- * exactly what came back. Throws RateLimitError on 429 and EmptyOutputError when
- * the reply has no usable text.
+ * The WRITE pass: turn a chunk into clean note sections. For a dialogue it is handed
+ * the transcript ALREADY split into speaker-labelled turns (attribution done by the
+ * diarize pass) and must keep those labels; for a monologue it gets the raw lines.
+ * Returns the parsed note plus raw metadata (finish_reason, text length/preview, model)
+ * so the diagnostic endpoint can see exactly what came back.
  */
-async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
+async function runWrite(opts: GenerateOpts, turns?: DialogueTurn[]): Promise<ChunkResult> {
   const isFirst = opts.chunkIndex === 0;
+  const user = chunkUserPrompt({
+    chunkIndex: opts.chunkIndex,
+    chunkTotal: opts.chunkTotal,
+    isFirst,
+    videoTitle: opts.videoTitle,
+    channel: opts.channel,
+    videoType: opts.videoType,
+    speakers: opts.speakers,
+    previousHeading: opts.previousHeading,
+    turns,
+    chunkText: turns ? undefined : opts.chunkText,
+  });
 
   let text: string;
   let finishReason: string | null;
   let model: string;
   try {
     ({ text, finishReason, model } = DRAFT_USES_STRONG
-      ? // Opt-in strong draft model: bounded window, then fall back to fast MODEL.
+      ? // Opt-in strong write model: bounded window, then fall back to fast MODEL.
         await chatPreferred(
           [
             { model: DRAFT_MODEL, timeoutMs: 30000 },
             { model: MODEL, timeoutMs: 15000 },
           ],
-          {
-            system: SYSTEM_PROMPT,
-            user: chunkUserPrompt({ ...opts, isFirst }),
-            maxTokens: 4000,
-            // Enough sampling room to actually reason about who is speaking (attribution
-            // is inference, not rote copying) while staying faithful to the wording.
-            temperature: 0.7,
-          },
+          { system: SYSTEM_PROMPT, user, maxTokens: 4000, temperature: 0.3 },
         )
       : // Default: fast model with the normal fallback chain.
         await chat({
           system: SYSTEM_PROMPT,
-          user: chunkUserPrompt({ ...opts, isFirst }),
+          user,
           maxTokens: 4000,
-          timeoutMs: 22000, // draft + repair must both fit the 60s serverless limit
-          temperature: 0.7,
+          timeoutMs: 22000, // diarize + write must both fit the 60s serverless limit
+          // Writing is a faithful transformation of given words with given labels — keep
+          // it low so it stays verbatim and doesn't drift.
+          temperature: 0.3,
         }));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error(
-      `[generateChunk] LLM call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
+      `[generateChunk] write call failed (chunk ${opts.chunkIndex + 1}/${opts.chunkTotal}):`,
       err,
     );
     throw err;
@@ -461,7 +470,7 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   const parsed = parseJsonObject<GeneratedChunk>(text);
 
   // Defensive shaping + deterministic cleanup (strip stray "Name:" prefixes, merge
-  // same-speaker paragraphs, drop filler/stutters) — never trust the model blindly.
+  // same-speaker paragraphs, fix name spelling) — never trust the model blindly.
   if (!Array.isArray(parsed.speakers)) parsed.speakers = [];
   const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
   parsed.sections = shapeSections(parsed.sections, speakers);
@@ -475,36 +484,64 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   };
 }
 
-/** Generate the note section(s) for one transcript chunk — draft, then a focused second pass. */
+/**
+ * Generate the note section(s) for one transcript chunk.
+ *
+ * DIALOGUE: two isolated passes — (1) DIARIZE the raw lines (decide who speaks each
+ * line, labels only, never rewriting), (2) WRITE the labelled turns up as clean verbatim
+ * prose. Separating "who spoke" from "write it nicely" is what stops the mixed-voice
+ * blocks and mechanical alternation.
+ * MONOLOGUE: a single WRITE pass, then a light copy-edit.
+ */
 export async function generateChunk(opts: GenerateOpts): Promise<GeneratedChunk> {
-  const draft = await runChunk(opts);
-  const parsed = draft.parsed;
+  const isDialogue = opts.videoType === "dialogue";
+
+  let write: ChunkResult;
+  if (isDialogue && (opts.speakers?.length ?? 0) >= 2) {
+    const lines = parseChunkLines(opts.chunkText);
+    const lineSpeakers = await diarizeChunk({
+      videoTitle: opts.videoTitle,
+      speakers: opts.speakers,
+      previousSpeaker: opts.previousSpeaker ?? null,
+      lines,
+    });
+    const turns = groupIntoTurns(lines, lineSpeakers, opts.speakers, opts.previousSpeaker ?? null);
+    write = await runWrite(opts, turns);
+  } else {
+    write = await runWrite(opts);
+  }
+
+  const parsed = write.parsed;
   const speakers = Array.from(new Set([...opts.speakers, ...parsed.speakers].filter(Boolean)));
 
-  const isDialogue = opts.videoType === "dialogue" || parsed.video_type === "dialogue";
-
-  if (isDialogue) {
-    // Dedicated pass: split blocks that merged two speakers and fix labels. Guarded —
-    // it keeps the draft on any failure, so it can never scramble the note.
-    await repairAttribution(parsed.sections, opts.videoTitle, speakers);
-  } else {
-    // Monologue: no attribution to fix — just a light text cleanup pass.
+  if (!isDialogue) {
+    // Monologue: no attribution — just a light text cleanup pass.
     await refineTexts(parsed.sections, opts.videoTitle, speakers);
   }
 
-  // Consistency guarantees, always applied last (after any splitting/relabeling):
+  // Consistency guarantees, always applied last:
   if (isDialogue) forwardFillSpeakers(parsed.sections, opts.previousSpeaker);
-  // Re-stitch now that speakers are fully populated, so any micro-turns the repair pass
-  // left over-split (same speaker, tiny blocks) collapse back into one block.
+  // Collapse any same-speaker micro-turns the writer over-split into one block.
   for (const s of parsed.sections) s.content = stitchFragments(s.content);
   backfillSectionTimestamps(parsed.sections);
 
   return parsed;
 }
 
-/** Same call as generateChunk, but returns the raw metadata for /api/diag. */
+/** Same as generateChunk's write path, but returns the raw metadata for /api/diag. */
 export async function generateChunkDebug(opts: GenerateOpts): Promise<ChunkResult> {
-  return runChunk(opts);
+  if (opts.videoType === "dialogue" && (opts.speakers?.length ?? 0) >= 2) {
+    const lines = parseChunkLines(opts.chunkText);
+    const lineSpeakers = await diarizeChunk({
+      videoTitle: opts.videoTitle,
+      speakers: opts.speakers,
+      previousSpeaker: opts.previousSpeaker ?? null,
+      lines,
+    });
+    const turns = groupIntoTurns(lines, lineSpeakers, opts.speakers, opts.previousSpeaker ?? null);
+    return runWrite(opts, turns);
+  }
+  return runWrite(opts);
 }
 
 /**
@@ -547,50 +584,63 @@ export async function generationSelfTest(): Promise<{
 }
 
 /**
- * Exercises the FULL two-pass path (draft + copy-edit) on a built-in sample and
- * times each pass separately — so /api/diag can confirm the second pass actually
- * runs and fits the serverless budget (or is silently timing out).
+ * Exercises the FULL dialogue path (diarize → write) on a built-in sample and times
+ * each pass separately — so /api/diag can confirm both passes run, the two voices land
+ * on separate speakers, and the pair fits the serverless budget.
  */
 export async function generationSelfTestFull(): Promise<{
-  draftModel: string;
-  draftIsStrong: boolean;
+  writeModel: string;
+  writeIsStrong: boolean;
   sectionsReturned: number;
-  draftMs: number;
-  refineMs: number;
-  refineRan: boolean;
+  diarizeMs: number;
+  writeMs: number;
+  lineSpeakers: string[];
+  distinctSpeakers: number;
 }> {
-  const sample = [
-    "[00:00] So welcome everyone to the show, I'm really glad you could join us today.",
-    "[00:06] Thanks for having me, it's great to be here and I'm excited to dig in.",
-    "[00:12] Let's start at the beginning — how did you first get into this field?",
-    "[00:18] Well, honestly it was kind of an accident, I stumbled into it in college.",
-  ].join("\n");
+  const speakers = ["Host", "Guest"];
+  const lines = parseChunkLines(
+    [
+      "[00:00] So welcome everyone to the show, I'm really glad you could join us today.",
+      "[00:06] Thanks for having me, it's great to be here and I'm excited to dig in.",
+      "[00:12] Let's start at the beginning — how did you first get into this field?",
+      "[00:18] Well, honestly it was kind of an accident, I stumbled into it in college.",
+    ].join("\n"),
+  );
 
   const t0 = Date.now();
-  const res = await runChunk({
-    chunkIndex: 0,
-    chunkTotal: 1,
+  const lineSpeakers = await diarizeChunk({
     videoTitle: "Diagnostic sample",
-    channel: "",
-    videoType: "dialogue",
-    speakers: ["Host", "Guest"],
-    previousHeading: null,
-    chunkText: sample,
+    speakers,
+    previousSpeaker: null,
+    lines,
   });
-  const draftMs = Date.now() - t0;
+  const diarizeMs = Date.now() - t0;
+  const turns = groupIntoTurns(lines, lineSpeakers, speakers, null);
 
   const t1 = Date.now();
-  // Exercise the real dialogue second pass (attribution repair).
-  const refineRan = await repairAttribution(res.parsed.sections, "Diagnostic sample", ["Host", "Guest"]);
-  const refineMs = Date.now() - t1;
+  const res = await runWrite(
+    {
+      chunkIndex: 0,
+      chunkTotal: 1,
+      videoTitle: "Diagnostic sample",
+      channel: "",
+      videoType: "dialogue",
+      speakers,
+      previousHeading: null,
+      chunkText: "",
+    },
+    turns,
+  );
+  const writeMs = Date.now() - t1;
 
   return {
-    draftModel: res.model,
-    draftIsStrong: res.model !== MODEL,
+    writeModel: res.model,
+    writeIsStrong: res.model !== MODEL,
     sectionsReturned: res.parsed.sections.length,
-    draftMs,
-    refineMs,
-    refineRan,
+    diarizeMs,
+    writeMs,
+    lineSpeakers,
+    distinctSpeakers: new Set(lineSpeakers.filter(Boolean)).size,
   };
 }
 
@@ -807,76 +857,145 @@ async function refineTexts(sections: Section[], title: string, speakers: string[
   }
 }
 
+// ---------------------------------------------------------------------------
+// Diarization (dialogue): decide who speaks each transcript line in a dedicated,
+// labels-only pass, then group lines into per-speaker turns for the write pass.
+// This isolates "who spoke" from "write it up", which is what removes the
+// mixed-voice blocks and mechanical alternation.
+// ---------------------------------------------------------------------------
+
+/** A single transcript line: its "[m:ss]" marker and the caption text. */
+export interface ChunkLine {
+  ts: string;
+  text: string;
+}
+
+/** Parse a raw "[m:ss] text" transcript chunk into structured lines. */
+export function parseChunkLines(chunkText: string): ChunkLine[] {
+  return chunkText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const m = l.match(/^\[([0-9:]+)\]\s*(.*)$/);
+      return m ? { ts: m[1], text: m[2] } : { ts: "", text: l };
+    });
+}
+
+/** "[m:ss]" / "[h:mm:ss]" → seconds; NaN when unparseable. */
+function tsToSeconds(ts: string): number {
+  const parts = ts.split(":").map(Number);
+  if (parts.some((n) => Number.isNaN(n))) return NaN;
+  return parts.reduce((acc, n) => acc * 60 + n, 0);
+}
+
 /**
- * Dialogue-only second pass focused on ATTRIBUTION: split any block that merged two
- * speakers' words and fix wrong labels (plus light text cleanup). Rebuilds sections
- * in place. Best-effort with guards: keeps the draft on any failure/timeout or if the
- * returned text drops too much content (so it can never scramble or shrink a note).
- * Returns true if it applied a repaired result.
+ * Number the lines for the diarizer and mark a ⏸ where a noticeable pause precedes a
+ * line — a silence gap is the strongest turn-change cue we can recover from timestamps.
+ * Approximated as (gap between line starts) minus the previous line's spoken length
+ * (~13 chars/sec); a leftover of ≥ ~1.5s is treated as a pause.
  */
-async function repairAttribution(sections: Section[], title: string, speakers: string[]): Promise<boolean> {
-  // Flatten blocks with their section index, in reading order.
-  const flat: { sIdx: number; block: NoteBlock }[] = [];
-  sections.forEach((s, sIdx) => s.content.forEach((block) => flat.push({ sIdx, block })));
-  if (flat.length < 2) return false;
+function buildNumberedLines(lines: ChunkLine[]): string {
+  const CHARS_PER_SEC = 13;
+  const PAUSE_SECS = 1.5;
+  return lines
+    .map((l, i) => {
+      let pause = false;
+      if (i > 0) {
+        const prev = tsToSeconds(lines[i - 1].ts);
+        const cur = tsToSeconds(l.ts);
+        if (!Number.isNaN(prev) && !Number.isNaN(cur)) {
+          const spoken = lines[i - 1].text.length / CHARS_PER_SEC;
+          if (cur - prev - spoken >= PAUSE_SECS) pause = true;
+        }
+      }
+      return `${i} | ${pause ? "⏸ " : ""}[${l.ts}] ${l.text}`;
+    })
+    .join("\n");
+}
 
-  const input = flat.map((f, i) => ({ i, speaker: f.block.speaker ?? "", text: f.block.text }));
-  const draftTotal = input.reduce((n, b) => n + b.text.length, 0);
+/** Map a model-returned speaker string to a canonical label from the list, or "" if none. */
+function normalizeSpeaker(raw: string, speakers: string[]): string {
+  const r = raw.trim().toLowerCase();
+  if (!r) return "";
+  const exact = speakers.find((s) => s.toLowerCase() === r);
+  if (exact) return exact;
+  // A first-name / partial match ("Andrej" for "Andrej Karpathy", or vice-versa).
+  const partial = speakers.find((s) => {
+    const sl = s.toLowerCase();
+    return sl.includes(r) || r.includes(sl) || sl.split(/\s+/).some((tok) => tok === r);
+  });
+  return partial ?? "";
+}
 
-  let out: Array<{ ref?: unknown; speaker?: unknown; text?: unknown }>;
+/**
+ * Decide the speaker of every line via a dedicated labels-only model call. Returns one
+ * speaker per input line (carry-forward filled). Best-effort: on any failure it falls
+ * back to keeping the previous speaker, so it can never stall or scramble a note.
+ */
+async function diarizeChunk(opts: {
+  videoTitle: string;
+  speakers: string[];
+  previousSpeaker: string | null;
+  lines: ChunkLine[];
+}): Promise<string[]> {
+  const { videoTitle, speakers, previousSpeaker, lines } = opts;
+  const seed =
+    previousSpeaker && speakers.includes(previousSpeaker) ? previousSpeaker : speakers[0] ?? "";
+  if (lines.length === 0) return [];
+  if (speakers.length < 2) return lines.map(() => seed);
+
+  let assigned = new Map<number, string>();
   try {
     const { text } = await chat({
-      system: ATTRIBUTION_SYSTEM_PROMPT,
-      user: attributionUserPrompt({ videoTitle: title, speakers, payload: JSON.stringify(input) }),
-      maxTokens: 4000,
-      timeoutMs: 12000,
-      // Attribution is the reasoning-heavy pass; give it room so it doesn't collapse the
-      // whole exchange onto one speaker.
-      temperature: 0.7,
+      system: DIARIZE_SYSTEM_PROMPT,
+      user: diarizeUserPrompt({
+        videoTitle,
+        speakers,
+        previousSpeaker,
+        numberedLines: buildNumberedLines(lines),
+      }),
+      maxTokens: 2000,
+      timeoutMs: 15000, // diarize + write must both fit the 60s serverless limit
+      temperature: 0.2, // classification — deterministic, not creative
     });
-    out = parseJsonArray(text);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(out) || !out.length) return false;
-
-  // Content-loss guard: never accept a result that dropped a big chunk of the words.
-  const outTotal = out.reduce((n, e) => n + (typeof e.text === "string" ? e.text.length : 0), 0);
-  if (outTotal < draftTotal * 0.7) return false;
-
-  // Group returned entries by their original block index (ref); a split yields several.
-  const byRef = new Map<number, Array<{ speaker?: string; text: string }>>();
-  for (const e of out) {
-    const ref = Number(e.ref);
-    if (!Number.isInteger(ref) || ref < 0 || ref >= flat.length) continue;
-    const t = typeof e.text === "string" ? e.text.trim() : "";
-    if (!t) continue;
-    const arr = byRef.get(ref) ?? [];
-    arr.push({ speaker: typeof e.speaker === "string" ? e.speaker : undefined, text: t });
-    byRef.set(ref, arr);
-  }
-  if (!byRef.size) return false;
-
-  // Rebuild each section: replace each original block with its sub-blocks (or keep it
-  // if the model omitted that ref). Sub-blocks inherit the original timestamp + type.
-  const rebuilt: NoteBlock[][] = sections.map(() => []);
-  flat.forEach((f, i) => {
-    const subs = byRef.get(i);
-    if (subs && subs.length) {
-      for (const sub of subs) {
-        const nb: NoteBlock = { type: f.block.type, text: cleanText(sub.text, speakers) } as NoteBlock;
-        if (sub.speaker) nb.speaker = sub.speaker;
-        if (f.block.timestamp) nb.timestamp = f.block.timestamp;
-        if (nb.text) rebuilt[f.sIdx].push(nb);
-      }
-    } else {
-      rebuilt[f.sIdx].push(f.block);
+    const arr = parseJsonArray<{ line?: unknown; speaker?: unknown }>(text);
+    for (const e of arr) {
+      const i = Number(e.line);
+      if (!Number.isInteger(i) || i < 0 || i >= lines.length) continue;
+      const sp = typeof e.speaker === "string" ? normalizeSpeaker(e.speaker, speakers) : "";
+      if (sp) assigned.set(i, sp);
     }
-  });
+  } catch {
+    assigned = new Map(); // fall back entirely to carry-forward
+  }
 
-  sections.forEach((s, sIdx) => {
-    const c = rebuilt[sIdx].filter((b) => b.text.length > 0);
-    if (c.length) s.content = c;
-  });
-  return true;
+  // Carry the speaker forward across any line the model left unlabeled.
+  const out: string[] = [];
+  let cur = seed;
+  for (let i = 0; i < lines.length; i++) {
+    const s = assigned.get(i);
+    if (s) cur = s;
+    out.push(cur);
+  }
+  return out;
+}
+
+/** Group consecutive same-speaker lines into turns for the write pass. */
+function groupIntoTurns(
+  lines: ChunkLine[],
+  lineSpeakers: string[],
+  speakers: string[],
+  previousSpeaker: string | null,
+): DialogueTurn[] {
+  const fallback =
+    previousSpeaker && speakers.includes(previousSpeaker) ? previousSpeaker : speakers[0] ?? "";
+  const turns: DialogueTurn[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const sp = lineSpeakers[i] || (turns.length ? turns[turns.length - 1].speaker : fallback);
+    const last = turns[turns.length - 1];
+    if (last && last.speaker === sp) last.lines.push(lines[i]);
+    else turns.push({ speaker: sp, lines: [lines[i]] });
+  }
+  return turns;
 }
