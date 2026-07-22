@@ -38,8 +38,12 @@ const FALLBACK_MODELS = (
 /** The models we try, in order — the primary first, then fallbacks. Deduped. */
 export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
 
-// Kept for backward-compat / diagnostics; classification uses the same fallback list.
+// Optional stronger model for the ONCE-per-note classify + speaker-role step. It runs off
+// the 60s per-chunk path, so a slower/smarter model (e.g. nvidia/nemotron-3-ultra-550b-a55b)
+// can help resolve who's the host without hurting generation speed. Bounded + falls back to
+// the fast MODEL if it's slow/unavailable. Left unset it just uses MODEL (Flash).
 export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
+const CLASSIFY_USES_STRONG = CLASSIFY_MODEL !== MODEL;
 
 // The note DRAFT model. Defaults to the fast MODEL (Flash) — the stronger models
 // are too slow for the 60s serverless limit. Can be opted into via LLM_DRAFT_MODEL.
@@ -123,9 +127,11 @@ async function callOnce(opts: {
     max_tokens: opts.maxTokens,
     stream: false,
   };
-  // DeepSeek reasoning models need this to keep chain-of-thought out of the answer.
-  // Other model families may reject the unknown field, so only send it to DeepSeek.
+  // Reasoning models need their chain-of-thought suppressed so the reply is just the
+  // answer (and fast). Each family names the flag differently, so send the matching one
+  // — an unknown field would be rejected by other models.
   if (/deepseek/i.test(opts.model)) body.chat_template_kwargs = { thinking: false };
+  else if (/nemotron/i.test(opts.model)) body.chat_template_kwargs = { enable_thinking: false };
 
   const ctrl = new AbortController();
   // Bound each call well under Vercel's hard 60s ceiling so a slow model can't
@@ -273,14 +279,17 @@ function parseJsonArray<T>(text: string): T[] {
   throw new Error("Model reply was not a JSON array.");
 }
 
-// Candidate models the diagnostic health-checks. Includes the fallback list plus a
-// couple extras. Override with LLM_PROBE_MODELS (comma-separated).
-const PROBE_MODELS = (
-  process.env.LLM_PROBE_MODELS || MODELS.join(",")
-)
-  .split(",")
-  .map((m) => m.trim())
-  .filter(Boolean);
+// Candidate models the diagnostic health-checks. Includes the fallback list plus the
+// optional classify model (so /api/diag shows whether the key can reach it). Override
+// with LLM_PROBE_MODELS (comma-separated).
+const PROBE_MODELS = Array.from(
+  new Set(
+    (process.env.LLM_PROBE_MODELS || [...MODELS, CLASSIFY_MODEL].join(","))
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean),
+  ),
+);
 
 /**
  * Health-check each candidate model with one minimal request. Reveals which models
@@ -359,16 +368,27 @@ export async function classifyVideo(opts: {
   transcript: string;
 }): Promise<{ video_type: VideoType; speakers: string[] }> {
   const sample = sampleTranscript(opts.transcript);
+  // Classification + role resolution is a decision task — keep it deterministic so the
+  // host/guest ordering is stable, not a different guess each run.
+  const params = {
+    system: CLASSIFY_SYSTEM_PROMPT,
+    user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
+    maxTokens: 2048,
+    temperature: 0.2,
+  };
   let text: string;
   try {
-    ({ text } = await chat({
-      system: CLASSIFY_SYSTEM_PROMPT,
-      user: classifyUserPrompt({ videoTitle: opts.title, channel: opts.channel, sample }),
-      maxTokens: 2048,
-      // Classification + role resolution is a decision task — keep it deterministic so the
-      // host/guest ordering is stable, not a different guess each run.
-      temperature: 0.2,
-    }));
+    ({ text } = CLASSIFY_USES_STRONG
+      ? // Opt-in strong classify model: a bounded window, then fall back to the fast MODEL.
+        // Both fit the note-creation route's 60s budget (this runs once, not per chunk).
+        await chatPreferred(
+          [
+            { model: CLASSIFY_MODEL, timeoutMs: 40000 },
+            { model: MODEL, timeoutMs: 15000 },
+          ],
+          params,
+        )
+      : await chat(params));
   } catch (err) {
     if (err instanceof RateLimitError) throw err;
     console.error("[classifyVideo] LLM call failed:", err);
