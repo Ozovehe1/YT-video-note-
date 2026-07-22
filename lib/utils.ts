@@ -67,6 +67,20 @@ export function normalizeTimestamp(raw: string | null | undefined): string | nul
   return cleaned;
 }
 
+/**
+ * For a section's blocks, decide where to SHOW the speaker label: only when it
+ * changes from the previous block (in reading order). Keeps the reader and every
+ * export consistent — a run of the same speaker isn't re-labelled on every block.
+ */
+export function speakerVisibility(blocks: { speaker?: string }[]): boolean[] {
+  let prev: string | undefined;
+  return blocks.map((b) => {
+    const show = !!b.speaker && b.speaker !== prev;
+    if (b.speaker) prev = b.speaker;
+    return show;
+  });
+}
+
 /** ISO 8601 duration (PT#H#M#S) → seconds. */
 export function parseIsoDuration(iso: string): number | null {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);

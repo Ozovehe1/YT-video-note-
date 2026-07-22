@@ -1,6 +1,6 @@
 import epub from "epub-gen-memory";
 import type { Note, NoteSection, NoteBlock } from "@/lib/types";
-import { normalizeTimestamp } from "@/lib/utils";
+import { normalizeTimestamp, speakerVisibility } from "@/lib/utils";
 
 function esc(s: string): string {
   return s
@@ -9,8 +9,9 @@ function esc(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function blockHtml(b: NoteBlock): string {
-  const speaker = b.speaker ? `<strong style="color:#8A2B22">${esc(b.speaker)}:</strong> ` : "";
+function blockHtml(b: NoteBlock, showSpeaker: boolean): string {
+  const speaker =
+    b.speaker && showSpeaker ? `<strong style="color:#8A2B22">${esc(b.speaker)}:</strong> ` : "";
   const tsValue = normalizeTimestamp(b.timestamp);
   const ts = tsValue ? ` <span style="color:#8a8172;font-size:0.8em">[${esc(tsValue)}]</span>` : "";
   switch (b.type) {
@@ -28,8 +29,10 @@ function sectionHtml(s: NoteSection): string {
   const tsLabel = normalizeTimestamp(s.timestamp_label);
   const ts = tsLabel ? ` <span style="color:#8a8172;font-weight:normal;font-size:0.7em">${esc(tsLabel)}</span>` : "";
   parts.push(`<h2 style="font-family:Georgia,serif">${esc(s.heading)}${ts}</h2>`);
+  const showSpeaker = speakerVisibility(s.content);
   let inList = false;
-  for (const b of s.content) {
+  for (let i = 0; i < s.content.length; i++) {
+    const b = s.content[i];
     if (b.type === "bullet" && !inList) {
       parts.push("<ul>");
       inList = true;
@@ -37,7 +40,7 @@ function sectionHtml(s: NoteSection): string {
       parts.push("</ul>");
       inList = false;
     }
-    parts.push(blockHtml(b));
+    parts.push(blockHtml(b, showSpeaker[i]));
   }
   if (inList) parts.push("</ul>");
   return parts.join("\n");
