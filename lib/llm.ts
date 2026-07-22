@@ -385,10 +385,13 @@ async function runChunk(opts: GenerateOpts): Promise<ChunkResult> {
   if (!Array.isArray(parsed.speakers)) parsed.speakers = [];
   parsed.sections = parsed.sections
     .filter((s) => s && Array.isArray(s.content))
-    .map((s) => ({
-      ...s,
-      content: s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock),
-    }));
+    .map((s) => {
+      const content = s.content.filter((b) => b && typeof b.text === "string").map(sanitizeBlock);
+      // Guardrail: a section must have a timestamp_label — if the model omitted it,
+      // fall back to the first block that carries a timestamp.
+      const timestamp_label = s.timestamp_label || content.find((b) => b.timestamp)?.timestamp || null;
+      return { ...s, timestamp_label, content };
+    });
 
   return {
     parsed,
