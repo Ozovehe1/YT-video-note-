@@ -38,11 +38,13 @@ const FALLBACK_MODELS = (
 /** The models we try, in order — the primary first, then fallbacks. Deduped. */
 export const MODELS = Array.from(new Set([MODEL, ...FALLBACK_MODELS]));
 
-// Optional stronger model for the ONCE-per-note classify + speaker-role step. It runs off
-// the 60s per-chunk path, so a slower/smarter model (e.g. nvidia/nemotron-3-ultra-550b-a55b)
-// can help resolve who's the host without hurting generation speed. Bounded + falls back to
-// the fast MODEL if it's slow/unavailable. Left unset it just uses MODEL (Flash).
-export const CLASSIFY_MODEL = process.env.LLM_CLASSIFY_MODEL || MODEL;
+// Stronger model for the ONCE-per-note classify + speaker-role step (monologue vs
+// dialogue, and who is host vs guest). It runs off the 60s per-chunk path, so a
+// slower/smarter reasoning model helps resolve who's the host without hurting generation
+// speed. Bounded (~40s) and falls back to the fast MODEL if it's slow, gated, or down —
+// so it self-heals even when a key can't reach it. Override or set to LLM_MODEL to disable.
+export const CLASSIFY_MODEL =
+  process.env.LLM_CLASSIFY_MODEL || "nvidia/nemotron-3-ultra-550b-a55b";
 const CLASSIFY_USES_STRONG = CLASSIFY_MODEL !== MODEL;
 
 // The note DRAFT model. Defaults to the fast MODEL (Flash) — the stronger models
@@ -88,6 +90,9 @@ class ProviderError extends Error {
 function isModelUnavailable(err: unknown): boolean {
   if (!(err instanceof ProviderError)) return false;
   if (err.status >= 500 || err.status === 404) return true;
+  // 402/403 = this key can't access THIS model (needs credits / not on the tier). That's
+  // a per-model gate, not a bad key, so fall over to the next model instead of failing.
+  if (err.status === 402 || err.status === 403) return true;
   return (
     err.status === 400 &&
     /DEGRADED|cannot be invoked|not found|does not exist|unknown model|not a valid model|no healthy/i.test(
