@@ -97,6 +97,14 @@ Rules for both:
 - A chunk may contain one topic (one section) or several (multiple sections). Split where the speaker
   actually changes topic.
 
+EVERY FIELD IS REQUIRED ON EVERY CHUNK. Do not omit any property — fill them ALL in for this chunk,
+exactly as in the shape below:
+- top level: "video_type" and "speakers" (non-empty) are always present.
+- every section: a non-empty "heading", a "timestamp_label", and a non-empty "content" array.
+- every content block: "type", non-empty "text", and a "timestamp". For a DIALOGUE every block also
+  has a "speaker"; for a MONOLOGUE omit "speaker" (there is only one voice). Never leave a required
+  field blank or null — if you are ever unsure of a timestamp, use the nearest preceding line's marker.
+
 Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of exactly this shape:
 {
   "video_type": "monologue" | "dialogue",
@@ -104,19 +112,20 @@ Respond with ONLY a JSON object (no markdown, no code fences, no commentary) of 
   "sections": [
     {
       "heading": "<short topic heading>",
-      "timestamp_label": "<the transcript marker of the line this section starts on, e.g. 5:03; or null>",
+      "timestamp_label": "<the transcript marker of the line this section starts on, e.g. 5:03>",
       "content": [
         {
           "type": "paragraph" | "bullet" | "quote",
           "text": "<the speaker's own words for this point/line/quote>",
-          "speaker": "<who said it — for a dialogue; omit for a monologue>",
-          "timestamp": "<the transcript marker of the line this comes from, e.g. 5:03; optional>"
+          "speaker": "<who said it — REQUIRED for a dialogue; omit ONLY for a monologue>",
+          "timestamp": "<the transcript marker of the line this comes from, e.g. 5:03 — REQUIRED>"
         }
       ]
     }
   ]
 }
-Every section MUST have a non-empty "content" array. "speaker" and "timestamp" are optional per block.`;
+Every section MUST have a non-empty "content" array, a "heading" and a "timestamp_label". Every block
+MUST have "type", "text" and "timestamp"; dialogue blocks MUST also have "speaker".`;
 
 export function chunkUserPrompt(opts: {
   chunkIndex: number;
@@ -162,7 +171,14 @@ repeat earlier material.`;
 
   const context = `${typeLine}${speakersLine} ${positionLine}${dialogueLine}`;
 
-  return `Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
+  // The full base instructions are ALSO repeated here in the user turn (they're already
+  // sent in the system role too) — some open models follow user-turn rules more closely.
+  return `You are given the note-taking rules, then the chunk to turn into notes. Follow the rules exactly.
+
+${SYSTEM_PROMPT}
+
+----- CHUNK TO PROCESS -----
+Video: "${videoTitle}"${channel ? ` — ${channel}` : ""}
 Chunk ${chunkIndex + 1} of ${chunkTotal}.
 ${context}
 
