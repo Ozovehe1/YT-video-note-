@@ -1,26 +1,16 @@
-"""
-Fully-web audio pipeline on Modal: download + diarize entirely in the cloud, with the
-YouTube download routed through YOUR phone (a free Tailscale exit node) so it comes from a
-residential IP. No local computer runs anything.
-
-Flow:
-  Vercel app  ── POST /transcribe {youtube_url, note_id, callback_url} ──▶  this Modal app
-  Modal (GPU job):  Tailscale userspace SOCKS5 → yt-dlp (via your phone's IP) → MOSS diarize
-  Modal  ── HMAC-signed POST {note_id, segments} ──▶  {callback_url}  (the app ingests it)
-
---- One-time setup ---
-Phone (Tailscale app): sign in, enable "Use as exit node"; approve it in admin.tailscale.com
-and generate a REUSABLE auth key.
-
-Modal secret (one secret named `tailscale` holding all three keys):
-  modal secret create tailscale TS_AUTHKEY=tskey-... TS_EXIT_NODE=<phone-tailscale-ip> \
-    ASR_WEBHOOK_SECRET=<long-random, same value as the app env>
-
-Deploy (from a Modal Notebook add `app.deploy()`, or CLI):
-  modal deploy agent/modal_asr.py
-Set the app env MODAL_TRANSCRIBE_URL to the printed `.../transcribe` URL, and ASR_WEBHOOK_SECRET
-to the same value as the asr-webhook secret.
-"""
+# Fully-web audio pipeline on Modal: download + diarize in the cloud, with the YouTube
+# download routed through YOUR phone (a free Tailscale exit node = residential IP).
+#
+# Flow: Vercel POST /transcribe {youtube_url, note_id, callback_url} -> this app ->
+#       Tailscale userspace SOCKS5 -> yt-dlp (via the phone's IP) -> MOSS diarize ->
+#       HMAC-signed POST {note_id, segments} back to callback_url.
+#
+# One Modal secret named `tailscale` holds all three keys:
+#   TS_AUTHKEY (reusable tskey-...), TS_EXIT_NODE (phone's Tailscale IP), ASR_WEBHOOK_SECRET.
+# Deploy from a Modal Notebook by adding `app.deploy()` at the bottom. The endpoint URL is
+# https://<workspace>--verbatim-asr-transcribe.modal.run and is STABLE across redeploys, so
+# MODAL_TRANSCRIBE_URL on the app never needs updating.
+# (Plain # comments, not a triple-quoted docstring, so it survives copy-paste into a notebook.)
 import hashlib
 import hmac
 import json
