@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import urllib.request
 
 import modal
@@ -38,8 +39,8 @@ image = (
     .run_commands(
         "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
         "apt-get install -y nodejs",
-        "git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/potprovider",
-        "cd /opt/potprovider/server && npm install && npx tsc",
+        "git clone --single-branch --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/potprovider",
+        "cd /opt/potprovider/server && npm ci && npx tsc",
     )
     .pip_install("torch", "torchaudio", index_url="https://download.pytorch.org/whl/cu128")
     .run_commands(
@@ -70,10 +71,19 @@ class Pipeline:
         from transformers import AutoModelForCausalLM, AutoProcessor
         from moss_transcribe_diarize.inference_utils import resolve_device
 
-        # Start the PO-token provider server (http://127.0.0.1:4416). The yt-dlp plugin
-        # queries it during download to satisfy YouTube's PO-token requirement. Runs for
-        # the life of the container; started here (once) before any job downloads.
+        # Start the PO-token provider server (http://127.0.0.1:4416) and confirm it's up,
+        # so the logs show plainly whether yt-dlp can fetch PO tokens. Runs for the life
+        # of the container; started here (once) before any job downloads.
         subprocess.Popen(["node", "/opt/potprovider/server/build/main.js"])
+        for _ in range(20):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:4416/ping", timeout=2).read()
+                print("[pot] provider server is UP on :4416", flush=True)
+                break
+            except Exception:
+                time.sleep(1)
+        else:
+            print("[pot] WARNING: provider server NOT reachable on :4416", flush=True)
 
         self.device = resolve_device("auto")
         self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
@@ -91,7 +101,8 @@ class Pipeline:
         opts = {
             "format": "bestaudio/best",
             "outtmpl": os.path.join(out_dir, "audio.%(ext)s"),
-            "quiet": True,
+            "quiet": False,
+            "verbose": True,  # temporary: surfaces the "[pot] PO Token Providers: ..." line
             "noprogress": True,
             "retries": 5,
             # Without cookies, mweb + a GVS PO token (from the provider) is the recommended
