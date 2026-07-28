@@ -529,16 +529,11 @@ function GeneratingState({
   let kicker: string;
   let heading: string;
   let sub: string;
-  if (note.status === "awaiting_audio") {
-    kicker = "Queued";
-    heading = "Waiting for your local helper";
-    sub =
-      "Start the Verbatim helper on your computer to fetch and transcribe the audio. This note begins automatically once it's running.";
-  } else if (note.status === "transcribing") {
+  if (note.status === "awaiting_audio" || note.status === "transcribing") {
     kicker = "Transcribing";
     heading = "Transcribing the audio";
     sub =
-      "Your local helper is downloading the audio and running the speaker-aware transcription. A long video can take a few minutes.";
+      "Fetching the audio and running speaker-aware transcription. A long video can take a few minutes — you can leave; it keeps going.";
   } else {
     kicker = preparing ? "Preparing" : "Writing";
     heading = preparing ? "Reading the transcript" : "Writing your note";
@@ -566,10 +561,10 @@ function GeneratingState({
           />
         </div>
         <div className="mt-2 flex items-center justify-between font-mono text-[0.65rem] text-muted">
-          <span>{audioPhase ? "on your computer" : percent > 0 ? `${percent}%` : "starting…"}</span>
+          <span>{audioPhase ? "in the cloud" : percent > 0 ? `${percent}%` : "starting…"}</span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oxblood" />{" "}
-            {audioPhase ? "running the local helper" : "saving as it writes"}
+            {audioPhase ? "transcribing the audio" : "saving as it writes"}
           </span>
         </div>
 

@@ -1,68 +1,55 @@
-# Verbatim local helper
+# Verbatim audio pipeline (Modal + your phone as a free residential exit node)
 
-Fetches and transcribes audio for Verbatim **on your own machine**, so YouTube downloads
-use your home/residential IP and stay reliable (the same reason phone apps like Vidmate
-work — they run on your device, not a datacenter). The web app never touches YouTube.
+Audio is downloaded and transcribed **entirely in the cloud** — nothing runs on a computer.
+`modal_asr.py` deploys a Modal app that:
 
-## What it does
+1. Receives a trigger from the web app (`{youtube_url, note_id, callback_url}`).
+2. Routes the YouTube download through **your phone** (a free Tailscale exit node), so it
+   comes from a residential IP and YouTube doesn't block it.
+3. Downloads audio with **yt-dlp**, transcribes + diarizes with
+   **OpenMOSS-Team/MOSS-Transcribe-Diarize**, and HMAC-POSTs the speaker-attributed
+   segments back to the app's `/api/notes/asr-callback`.
 
-1. Polls the app for queued videos (`awaiting_audio` notes).
-2. Downloads the audio with **yt-dlp** and transcodes it to 16 kHz mono with **ffmpeg**.
-3. Sends the audio to **your diarizing ASR endpoint** (e.g. on Modal) and gets back
-   speaker-attributed segments `[{start, speaker, text}, …]`.
-4. Posts the transcript back to the app, which then writes the verbatim note.
+## One-time setup
 
-## Requirements
+### 1. Your phone → free residential exit node
+- Install **Tailscale** (Play Store / App Store), sign in.
+- Enable **Use as exit node** in the app.
+- In **admin.tailscale.com** (works in a mobile browser): approve the phone as an exit node,
+  and **Settings → Keys → Generate auth key** (make it **reusable**). Note the phone's device
+  name (e.g. `pixel-8`).
+- Keep the phone **plugged in, on Wi‑Fi, with battery optimization off for Tailscale**.
 
-- **Python 3.9+**
-- **ffmpeg** on your PATH (`brew install ffmpeg` / `apt install ffmpeg` / [ffmpeg.org](https://ffmpeg.org))
-- `pip install -r requirements.txt`
-
-## Configure
-
-Get an **agent token** from the app: Settings → *Connect your local helper* → Generate.
-
-```bash
-export VERBATIM_URL="https://your-app.vercel.app"
-export VERBATIM_AGENT_TOKEN="vba_…"        # from the app's Settings
-export ASR_URL="https://your-asr-endpoint" # your diarizing ASR (accepts an audio upload)
-export ASR_KEY="…"                          # optional bearer key for the ASR
-# export POLL_INTERVAL=15                    # optional
+### 2. Modal secrets
+```
+modal secret create asr-tailscale TS_AUTHKEY=tskey-...  TS_EXIT_NODE=<your-phone-name>
+modal secret create asr-webhook   ASR_WEBHOOK_SECRET=<long-random-string>
 ```
 
-## Run
+### 3. Deploy
+From a **Modal Notebook** (phone-friendly): paste `modal_asr.py` into a cell, add `app.deploy()`
+at the end, run it. Or CLI: `modal deploy agent/modal_asr.py`.
+Copy the printed **`…/transcribe`** URL.
 
-```bash
-pip install -r requirements.txt
-python verbatim_agent.py
-```
+### 4. Web app env (Vercel)
+- `MODAL_TRANSCRIBE_URL` = the `…/transcribe` URL
+- `ASR_WEBHOOK_SECRET` = the **same** value as the `asr-webhook` Modal secret
+- `SUPABASE_SERVICE_ROLE_KEY` = your Supabase service-role key (the callback bypasses RLS)
 
-Leave it running while you use the app. Notes queue as **“Waiting for your local helper…”**
-until the helper picks them up; if the helper isn't running, they simply wait.
+Also run `supabase/migrations/0002_agent.sql` once (adds the `transcribing` status).
 
-Keep yt-dlp current so YouTube changes don't break downloads: `pip install -U yt-dlp`.
+## How a note flows
 
-## Deploying the ASR on Modal (MOSS-Transcribe-Diarize)
+Create a note → it's `transcribing` → Modal downloads via your phone's IP + MOSS diarizes →
+webhook posts the transcript back → note becomes `processing` → notes are written with correct,
+voice-based speakers. All driven from your phone; the only always-on thing is Tailscale on the
+phone, which just relays the download traffic.
 
-`modal_asr.py` in this folder deploys **OpenMOSS-Team/MOSS-Transcribe-Diarize** as the
-diarizing ASR endpoint, matching the contract below (it returns `start/end/speaker/text`).
+## Notes
 
-```bash
-pip install modal && modal setup                       # one-time
-modal secret create asr-auth ASR_KEY=<long-random>     # must equal the helper's ASR_KEY
-modal deploy agent/modal_asr.py                         # prints your ASR_URL
-```
-
-Then set `ASR_URL` (the printed URL) and `ASR_KEY` (the same secret) for the helper. The
-container cold-starts a small GPU (L4), loads the 0.9B model (weights baked into the image),
-and stays warm ~5 min between requests. MOSS handles up to ~90 min of audio in a single pass.
-
-## Your ASR endpoint contract
-
-`POST {ASR_URL}` with a multipart `file` (the audio). Return either:
-
-- `{"segments": [{"start": <sec>, "speaker": "SPEAKER_00", "text": "…"}, …]}` (synchronous), or
-- `{"job_id": "…"}` and expose `GET {ASR_URL}/jobs/{job_id}` → `{"status": "running|done|error",
-  "segments": […], "error": "…"}` (asynchronous).
-
-`start` is seconds from the video start; `speaker` is any stable per-speaker label.
+- Tailscale runs in **userspace mode** inside Modal (no privileged TUN needed) and exposes a
+  local SOCKS5 proxy that only yt-dlp uses — the callback egresses normally.
+- MOSS handles up to ~90 min of audio in one pass; bump `MOSS_MAX_NEW_TOKENS` for very long,
+  dense videos, or we add audio windowing.
+- Cost: Modal GPU (has free monthly credits) + Tailscale free tier + your phone's data. No proxy
+  fees.

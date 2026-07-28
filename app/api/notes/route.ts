@@ -43,17 +43,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const { data: note, error } = await supabase
     .from("notes")
     .insert({
       user_id: user.id,
       video_id: videoId,
-      video_url: `https://www.youtube.com/watch?v=${videoId}`,
+      video_url: videoUrl,
       title: meta.title,
       channel: meta.channel,
       thumbnail: meta.thumbnail,
       duration_seconds: meta.duration_seconds,
-      status: "awaiting_audio",
+      status: "transcribing",
       chunk_cursor: 0,
       chunk_total: 0,
     })
@@ -64,9 +65,46 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not save the note." }, { status: 500 });
   }
 
+  // Kick off the cloud transcription job (Modal downloads the audio via the residential
+  // exit node, diarizes it, and calls our webhook back). Fire-and-forget: it's async.
+  try {
+    await startTranscription({ request, videoUrl, noteId: note.id });
+  } catch (err) {
+    console.error("[notes] failed to start transcription:", err);
+    await supabase
+      .from("notes")
+      .update({ status: "error", error_message: "Couldn't start transcription. Please try again." })
+      .eq("id", note.id);
+    return NextResponse.json({ error: "Couldn't start transcription." }, { status: 502 });
+  }
+
   // Make sure the new note appears right away wherever notes are listed.
   revalidatePath("/library");
   revalidatePath("/");
 
   return NextResponse.json({ id: note.id });
+}
+
+/** Trigger the Modal transcription endpoint for a note. */
+async function startTranscription(opts: { request: Request; videoUrl: string; noteId: string }) {
+  const endpoint = process.env.MODAL_TRANSCRIBE_URL;
+  const secret = process.env.ASR_WEBHOOK_SECRET;
+  if (!endpoint || !secret) throw new Error("Transcription endpoint is not configured.");
+
+  const hdrs = opts.request.headers;
+  const host = hdrs.get("x-forwarded-host") ?? hdrs.get("host");
+  const proto = hdrs.get("x-forwarded-proto") ?? "https";
+  const callbackUrl = `${proto}://${host}/api/notes/asr-callback`;
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      youtube_url: opts.videoUrl,
+      note_id: opts.noteId,
+      callback_url: callbackUrl,
+      secret,
+    }),
+  });
+  if (!res.ok) throw new Error(`Modal returned ${res.status}`);
 }

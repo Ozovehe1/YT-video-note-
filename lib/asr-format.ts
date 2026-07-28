@@ -1,4 +1,17 @@
+import { createHmac, timingSafeEqual } from "crypto";
 import { formatDuration } from "@/lib/utils";
+
+/** Verify the Modal webhook's HMAC-SHA256 signature over the raw request body. */
+export function verifyAsrSignature(rawBody: string, signature: string | null, secret: string): boolean {
+  if (!signature || !secret) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  if (expected.length !== signature.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  } catch {
+    return false;
+  }
+}
 
 /** One diarized segment from the ASR: absolute times (seconds), a speaker label, and the words. */
 export interface AsrSegment {
