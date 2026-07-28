@@ -12,9 +12,9 @@ Flow:
 Phone (Tailscale app): sign in, enable "Use as exit node"; approve it in admin.tailscale.com
 and generate a REUSABLE auth key.
 
-Modal secrets:
-  modal secret create asr-tailscale TS_AUTHKEY=tskey-...   TS_EXIT_NODE=<your-phone-name>
-  modal secret create asr-webhook   ASR_WEBHOOK_SECRET=<long-random, same value as the app env>
+Modal secret (one secret named `tailscale` holding all three keys):
+  modal secret create tailscale TS_AUTHKEY=tskey-... TS_EXIT_NODE=<phone-tailscale-ip> \
+    ASR_WEBHOOK_SECRET=<long-random, same value as the app env>
 
 Deploy (from a Modal Notebook add `app.deploy()`, or CLI):
   modal deploy agent/modal_asr.py
@@ -93,7 +93,7 @@ def _start_tailscale() -> str:
 @app.cls(
     gpu="L4",
     image=image,
-    secrets=[modal.Secret.from_name("asr-tailscale"), modal.Secret.from_name("asr-webhook")],
+    secrets=[modal.Secret.from_name("tailscale")],
     timeout=3600,
     scaledown_window=120,
 )
@@ -187,7 +187,7 @@ class Pipeline:
             raise
 
 
-@app.function(image=image, secrets=[modal.Secret.from_name("asr-webhook")])
+@app.function(image=image, secrets=[modal.Secret.from_name("tailscale")])
 @modal.fastapi_endpoint(method="POST")
 def transcribe(payload: dict):
     """Cheap trigger the app calls. Spawns the GPU job and returns immediately (timeout-proof)."""

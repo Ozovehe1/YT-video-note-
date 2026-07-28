@@ -20,10 +20,13 @@ Audio is downloaded and transcribed **entirely in the cloud** — nothing runs o
   name (e.g. `pixel-8`).
 - Keep the phone **plugged in, on Wi‑Fi, with battery optimization off for Tailscale**.
 
-### 2. Modal secrets
+### 2. Modal secret
+One secret named `tailscale` holding all three keys (dashboard → Secrets → Create → Custom, or CLI):
 ```
-modal secret create asr-tailscale TS_AUTHKEY=tskey-...  TS_EXIT_NODE=<your-phone-name>
-modal secret create asr-webhook   ASR_WEBHOOK_SECRET=<long-random-string>
+modal secret create tailscale \
+  TS_AUTHKEY=tskey-... \
+  TS_EXIT_NODE=<your-phone's Tailscale 100.x IP> \
+  ASR_WEBHOOK_SECRET=<long-random-string>
 ```
 
 ### 3. Deploy
