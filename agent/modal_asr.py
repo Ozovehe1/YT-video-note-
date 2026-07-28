@@ -38,12 +38,24 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "ffmpeg", "curl", "iproute2")
     .run_commands("curl -fsSL https://tailscale.com/install.sh | sh")
+    # Node 20 + the bgutil PO-token provider SERVER. YouTube now requires a "PO token"
+    # for its player clients; this server mints them and the yt-dlp plugin (pip, below)
+    # queries it automatically at http://127.0.0.1:4416.
+    .run_commands(
+        "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+        "apt-get install -y nodejs",
+        "git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/potprovider",
+        "cd /opt/potprovider/server && npm install && npx tsc",
+    )
     .pip_install("torch", "torchaudio", index_url="https://download.pytorch.org/whl/cu128")
     .run_commands(
         "git clone https://github.com/OpenMOSS/MOSS-Transcribe-Diarize.git /opt/moss",
         "cd /opt/moss && pip install -e .",
     )
-    .pip_install("fastapi[standard]", "yt-dlp", "huggingface_hub", "requests")
+    # yt-dlp + the PO-token provider PLUGIN (auto-detected by yt-dlp) + web deps.
+    .pip_install(
+        "fastapi[standard]", "yt-dlp", "bgutil-ytdlp-pot-provider", "huggingface_hub", "requests"
+    )
     .run_function(_download_model)
 )
 
@@ -94,6 +106,11 @@ class Pipeline:
         from transformers import AutoModelForCausalLM, AutoProcessor
         from moss_transcribe_diarize.inference_utils import resolve_device
 
+        # Start the PO-token provider server (http://127.0.0.1:4416). The yt-dlp plugin
+        # queries it during download to satisfy YouTube's PO-token requirement. Runs for
+        # the life of the container; started here (once) before any job downloads.
+        subprocess.Popen(["node", "/opt/potprovider/server/build/main.js"])
+
         self.device = resolve_device("auto")
         self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
         self.model = (
@@ -114,10 +131,10 @@ class Pipeline:
             "noprogress": True,
             "retries": 5,
             "proxy": proxy,  # ← routes the YouTube fetch through the phone's residential IP
-            # Ask YouTube via its mobile/TV player clients instead of the plain `web`
-            # client. These often avoid the "confirm you're not a bot" gate without
-            # cookies; yt-dlp tries them in order and uses the first that returns audio.
-            "extractor_args": {"youtube": {"player_client": ["tv", "ios", "mweb", "web_safari", "android"]}},
+            # With the PO-token provider running + cookies, yt-dlp's default (web) clients
+            # work and are the most complete; the plugin injects the GVS PO token that
+            # YouTube now requires. A couple of extra clients act as fallbacks.
+            "extractor_args": {"youtube": {"player_client": ["default", "web_safari", "tv"]}},
             "postprocessors": [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "wav", "preferredquality": "0"}
             ],
@@ -181,6 +198,10 @@ class Pipeline:
             with tempfile.TemporaryDirectory() as tmp:
                 audio = self._download(youtube_url, proxy, tmp)
                 segments = self._transcribe(audio)
+            if not segments:
+                # Clean failure instead of posting an empty "done" (which the app rejects
+                # with 422) — the app records an error the user can retry.
+                raise RuntimeError("No speech found in the downloaded audio")
             self._post_back(callback_url, {"note_id": note_id, "status": "done", "segments": segments})
         except Exception as e:
             try:
