@@ -45,7 +45,7 @@ def _download_model():
 
 # Install Tailscale (for the residential exit node), ffmpeg + yt-dlp (download), torch + MOSS.
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "ffmpeg", "curl", "iproute2")
     .run_commands("curl -fsSL https://tailscale.com/install.sh | sh")
     .pip_install("torch", "torchaudio", index_url="https://download.pytorch.org/whl/cu128")
@@ -200,5 +200,9 @@ def transcribe(payload: dict):
     callback_url = payload.get("callback_url")
     if not (url and note_id and callback_url):
         return {"ok": False, "error": "missing fields"}
-    Pipeline().run_job.spawn(youtube_url=url, note_id=note_id, callback_url=callback_url)
+    # Look the class up by name at call-time so this endpoint also deploys from a
+    # Modal Notebook (serialized deploy can't pickle an unhydrated Cls global).
+    modal.Cls.from_name("verbatim-asr", "Pipeline")().run_job.spawn(
+        youtube_url=url, note_id=note_id, callback_url=callback_url
+    )
     return {"ok": True}
