@@ -42,6 +42,21 @@ until the helper picks them up; if the helper isn't running, they simply wait.
 
 Keep yt-dlp current so YouTube changes don't break downloads: `pip install -U yt-dlp`.
 
+## Deploying the ASR on Modal (MOSS-Transcribe-Diarize)
+
+`modal_asr.py` in this folder deploys **OpenMOSS-Team/MOSS-Transcribe-Diarize** as the
+diarizing ASR endpoint, matching the contract below (it returns `start/end/speaker/text`).
+
+```bash
+pip install modal && modal setup                       # one-time
+modal secret create asr-auth ASR_KEY=<long-random>     # must equal the helper's ASR_KEY
+modal deploy agent/modal_asr.py                         # prints your ASR_URL
+```
+
+Then set `ASR_URL` (the printed URL) and `ASR_KEY` (the same secret) for the helper. The
+container cold-starts a small GPU (L4), loads the 0.9B model (weights baked into the image),
+and stays warm ~5 min between requests. MOSS handles up to ~90 min of audio in a single pass.
+
 ## Your ASR endpoint contract
 
 `POST {ASR_URL}` with a multipart `file` (the audio). Return either:
