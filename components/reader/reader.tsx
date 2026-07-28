@@ -212,6 +212,23 @@ export function Reader({
     };
   }, [note.status, note.id, router]);
 
+  // While the audio is being fetched + transcribed by the local helper, poll for the
+  // status to flip to "processing" so the reader advances on its own.
+  useEffect(() => {
+    if (note.status !== "awaiting_audio" && note.status !== "transcribing") return;
+    let stopped = false;
+    (async () => {
+      while (!stopped) {
+        await driveSleep(6000);
+        if (stopped) return;
+        router.refresh();
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [note.status, note.id, router]);
+
   return (
     <div
       data-theme={theme}
@@ -316,7 +333,7 @@ export function Reader({
           )}
 
           {total === 0 ? (
-            processing ? (
+            note.status === "awaiting_audio" || note.status === "transcribing" || processing ? (
               <GeneratingState note={note} sectionsSoFar={total} percent={genPercent} />
             ) : (
               <EmptyNote />
@@ -507,14 +524,31 @@ function GeneratingState({
 }) {
   const parts = note.chunk_total ?? 0;
   const preparing = (note.chunk_cursor ?? 0) === 0 && sectionsSoFar === 0;
-  const kicker = preparing ? "Preparing" : "Writing";
-  const heading = preparing ? "Reading the transcript" : "Writing your note";
-  const sub = preparing
-    ? "Taking in the whole video and setting the structure. Your first section appears in a few moments."
-    : parts > 0
-      ? `Working through the video — part ${Math.min((note.chunk_cursor ?? 0) + 1, parts)} of ${parts}.`
-      : "Turning the transcript into a structured reading note.";
-  const barWidth = Math.max(6, percent || (preparing ? 6 : 12));
+  const audioPhase = note.status === "awaiting_audio" || note.status === "transcribing";
+
+  let kicker: string;
+  let heading: string;
+  let sub: string;
+  if (note.status === "awaiting_audio") {
+    kicker = "Queued";
+    heading = "Waiting for your local helper";
+    sub =
+      "Start the Verbatim helper on your computer to fetch and transcribe the audio. This note begins automatically once it's running.";
+  } else if (note.status === "transcribing") {
+    kicker = "Transcribing";
+    heading = "Transcribing the audio";
+    sub =
+      "Your local helper is downloading the audio and running the speaker-aware transcription. A long video can take a few minutes.";
+  } else {
+    kicker = preparing ? "Preparing" : "Writing";
+    heading = preparing ? "Reading the transcript" : "Writing your note";
+    sub = preparing
+      ? "Taking in the whole video and setting the structure. Your first section appears in a few moments."
+      : parts > 0
+        ? `Working through the video — part ${Math.min((note.chunk_cursor ?? 0) + 1, parts)} of ${parts}.`
+        : "Turning the transcript into a structured reading note.";
+  }
+  const barWidth = audioPhase ? 6 : Math.max(6, percent || (preparing ? 6 : 12));
 
   return (
     <div className="py-6">
@@ -532,9 +566,10 @@ function GeneratingState({
           />
         </div>
         <div className="mt-2 flex items-center justify-between font-mono text-[0.65rem] text-muted">
-          <span>{percent > 0 ? `${percent}%` : "starting…"}</span>
+          <span>{audioPhase ? "on your computer" : percent > 0 ? `${percent}%` : "starting…"}</span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oxblood" /> saving as it writes
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oxblood" />{" "}
+            {audioPhase ? "running the local helper" : "saving as it writes"}
           </span>
         </div>
 

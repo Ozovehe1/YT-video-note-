@@ -41,7 +41,7 @@ export async function GET(request: Request) {
     NVIDIA_API_KEY: Boolean(process.env.NVIDIA_API_KEY),
     models: MODELS, // tried in order, first healthy one wins
     LLM_BASE_URL: process.env.LLM_BASE_URL || "(default) https://integrate.api.nvidia.com/v1",
-    SUPADATA_API_KEY: Boolean(process.env.SUPADATA_API_KEY),
+    SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
     YOUTUBE_API_KEY: Boolean(process.env.YOUTUBE_API_KEY),
     NEXT_PUBLIC_SUPABASE_URL: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
   };

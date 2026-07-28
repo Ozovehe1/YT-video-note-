@@ -1,5 +1,5 @@
 export type VideoType = "monologue" | "dialogue";
-export type NoteStatus = "processing" | "ready" | "error";
+export type NoteStatus = "awaiting_audio" | "transcribing" | "processing" | "ready" | "error";
 export type ReaderTheme = "paper" | "sepia" | "night" | "contrast";
 export type ReaderFont = "read" | "sans";
 

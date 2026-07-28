@@ -3,13 +3,15 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
-import { fetchTranscript, TranscriptError } from "@/lib/supadata";
-import { chunkTranscript } from "@/lib/chunk";
-import { classifyVideo } from "@/lib/llm";
 
 export const maxDuration = 60;
 
-/** Create a note: resolve the video, fetch + chunk the transcript, store as processing. */
+/**
+ * Create a note. The audio is fetched + transcribed on the user's machine by the local
+ * helper (residential IP, diarizing ASR), so here we only resolve the video's metadata
+ * and queue the note as `awaiting_audio`. The helper picks it up, transcribes, and posts
+ * the diarized transcript back, which flips the note to `processing`.
+ */
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {
@@ -41,36 +43,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  // Transcript
-  let transcript: string;
-  try {
-    transcript = await fetchTranscript(videoId);
-  } catch (err) {
-    if (err instanceof TranscriptError) {
-      return NextResponse.json({ error: err.message }, { status: 422 });
-    }
-    return NextResponse.json({ error: "Could not fetch the transcript." }, { status: 502 });
-  }
-
-  const chunks = chunkTranscript(transcript);
-
-  // Classify monologue vs dialogue up front, from a sample of the WHOLE transcript
-  // (not just the intro, which is usually a solo host). Best-effort: if this fails
-  // or is rate-limited, leave it null and the first chunk's generation will classify.
-  let videoType: "monologue" | "dialogue" | null = null;
-  let speakers: string[] = [];
-  try {
-    const classified = await classifyVideo({
-      title: meta.title,
-      channel: meta.channel,
-      transcript,
-    });
-    videoType = classified.video_type;
-    speakers = classified.speakers;
-  } catch {
-    // ignore — fall back to per-chunk classification
-  }
-
   const { data: note, error } = await supabase
     .from("notes")
     .insert({
@@ -81,12 +53,9 @@ export async function POST(request: Request) {
       channel: meta.channel,
       thumbnail: meta.thumbnail,
       duration_seconds: meta.duration_seconds,
-      video_type: videoType,
-      speakers,
-      status: "processing",
-      transcript,
+      status: "awaiting_audio",
       chunk_cursor: 0,
-      chunk_total: chunks.length,
+      chunk_total: 0,
     })
     .select("id")
     .single();
@@ -99,5 +68,5 @@ export async function POST(request: Request) {
   revalidatePath("/library");
   revalidatePath("/");
 
-  return NextResponse.json({ id: note.id, chunkTotal: chunks.length });
+  return NextResponse.json({ id: note.id });
 }

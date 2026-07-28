@@ -1,6 +1,53 @@
 import type { VideoType } from "./types";
 
 // ---------------------------------------------------------------------------
+// Speaker-name resolution (run ONCE after the diarized transcript arrives).
+// The ASR gives real speaker TURNS but anonymous labels (SPEAKER_00, SPEAKER_01…).
+// This maps each label to a real name using who is greeted/named and who asks vs
+// answers — the arxiv 2407.12094 "a name spoken refers to the other speaker" prior,
+// now reliable because the turns are real, not guessed.
+// ---------------------------------------------------------------------------
+export const RESOLVE_SPEAKERS_SYSTEM_PROMPT = `\
+You are given an excerpt of a conversation transcript that is ALREADY split by speaker, but the
+speakers are anonymous labels (e.g. SPEAKER_00, SPEAKER_01). Map each label to a real name (or a role)
+and say whether the video is a monologue or a dialogue.
+
+How to resolve names — a name spoken aloud almost always refers to the OTHER person present:
+- When one speaker greets/thanks/introduces someone BY NAME ("thank you, Andrej, for joining",
+  "welcome, Sarah"), that NAMED person is the OTHER label (usually the guest), and the speaker saying
+  it is the host/interviewer.
+- The label that ASKS the questions and does the intro is the interviewer/host; the label that gives
+  the long first-person answers is the guest.
+Use ONLY names actually spoken in the transcript. If a label's real name is never stated, use a role:
+"Host"/"Guest", or "Speaker 1"/"Speaker 2", or "Narrator" for voiceover.
+
+ORDER: in "speakers", list the interviewer/host first, then the guest(s).
+"video_type" is "monologue" if only one label really speaks, else "dialogue".
+
+Respond with ONLY this JSON (no markdown, no commentary):
+{
+  "video_type": "monologue" | "dialogue",
+  "label_map": { "SPEAKER_00": "<name or role>", "SPEAKER_01": "<name or role>" },
+  "speakers": ["<host first>", "<guest>", ...]
+}`;
+
+export function resolveSpeakersUserPrompt(opts: {
+  videoTitle: string;
+  channel: string;
+  labels: string[];
+  sample: string;
+}): string {
+  return `Video: "${opts.videoTitle}"${opts.channel ? ` — ${opts.channel}` : ""}
+Anonymous speaker labels present: ${opts.labels.join(", ")}.
+
+Map each label to a real name (or role) and give the video_type, from this excerpt:
+
+<transcript_sample>
+${opts.sample}
+</transcript_sample>`;
+}
+
+// ---------------------------------------------------------------------------
 // Video-type classification (run ONCE, up front, over a sample of the whole
 // transcript — not just the intro, which is usually a solo host monologue).
 // ---------------------------------------------------------------------------
@@ -75,9 +122,10 @@ For a MONOLOGUE, each section:
 
 For a DIALOGUE, each section:
 - Groups the conversation by the topic being discussed, with a heading and starting timestamp.
-- Attributes every substantive point to its speaker via the block's "speaker" field. Use real names
-  when the transcript states them; otherwise "Host"/"Guest" or "Speaker 1"/"Speaker 2". Since YouTube
-  transcripts are unlabeled, infer turns from context (questions vs answers, "so tell me…", intros).
+- THE SPEAKER IS GIVEN — you do NOT guess it. Every transcript line is prefixed with a
+  "[SPEAKER: <name>]" tag naming who said that line. Copy that exact name into the block's "speaker"
+  field, and NEVER include the "[SPEAKER: …]" tag itself in the "text". Do not re-attribute or merge two
+  different speakers into one block; when the tag changes, start a new block for the new speaker.
 - Captures the full substance of each answer — disagreements, follow-ups, anecdotes — and pulls key
   exchanges into quote blocks.
 
@@ -87,9 +135,11 @@ Rules for both:
   restate ideas in your own words. Remove only filler, false starts, and obvious transcription
   errors (fix clear misrecognitions from context). The result should read like a lightly cleaned
   transcript, not a rewrite.
-- TIMESTAMPS COME FROM THE TRANSCRIPT: every transcript line is prefixed with its own [m:ss] (or
-  [h:mm:ss]) marker. Set each section's "timestamp_label" to the exact marker of the line where
-  that section starts, and set a block "timestamp" to the exact marker of the line it comes from.
+- TIMESTAMPS COME FROM THE TRANSCRIPT: every transcript line looks like "[m:ss] [SPEAKER: name] words"
+  (the [SPEAKER: …] tag is present only for a dialogue). Set each section's "timestamp_label" to the
+  exact [m:ss] marker of the line where that section starts, and set a block "timestamp" to the exact
+  marker of the line it comes from. The [SPEAKER: …] tag and [m:ss] marker are METADATA — never copy
+  them into "text".
   COPY the marker verbatim — never invent, estimate, round, or reformat a time, and never put
   brackets inside the value (just the digits, e.g. "5:03").
 - Give every section the SAME depth of coverage — never thin out or rush later parts of the video;

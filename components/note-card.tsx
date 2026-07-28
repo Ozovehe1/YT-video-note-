@@ -30,6 +30,14 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
   const processing = note.status === "processing";
   const errored = note.status === "error";
   const started = percent > 0;
+  const busyLabel =
+    note.status === "awaiting_audio"
+      ? "Queued"
+      : note.status === "transcribing"
+        ? "Transcribing"
+        : processing
+          ? "Writing"
+          : null;
 
   return (
     <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-hairline bg-surface transition-shadow hover:shadow-soft">
@@ -44,9 +52,9 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
               {note.video_type === "dialogue" ? "Dialogue" : "Monologue"}
             </span>
           )}
-          {processing && (
+          {busyLabel && (
             <span className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-full bg-black/70 px-2.5 py-1 text-[0.65rem] text-white">
-              <Loader2 className="h-3 w-3 animate-spin" /> Writing
+              <Loader2 className="h-3 w-3 animate-spin" /> {busyLabel}
             </span>
           )}
         </div>

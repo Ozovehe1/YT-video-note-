@@ -3,6 +3,8 @@ import {
   chunkUserPrompt,
   CLASSIFY_SYSTEM_PROMPT,
   classifyUserPrompt,
+  RESOLVE_SPEAKERS_SYSTEM_PROMPT,
+  resolveSpeakersUserPrompt,
 } from "./prompts";
 import type { GeneratedChunk, NoteBlock, VideoType } from "./types";
 
@@ -165,6 +167,7 @@ async function chat(opts: {
   user: string;
   maxTokens: number;
   timeoutMs?: number;
+  temperature?: number;
 }): Promise<{ text: string; finishReason: string | null; model: string }> {
   const order = [...MODELS.slice(activeIndex), ...MODELS.slice(0, activeIndex)];
   let lastErr: unknown;
@@ -322,6 +325,56 @@ export async function classifyVideo(opts: {
   };
 }
 
+/**
+ * Map the ASR's anonymous diarization labels (SPEAKER_00, …) to real names/roles and the
+ * video type, from a sample of the already-diarized transcript. Best-effort: on any failure
+ * (or a monologue) it returns an empty map and the caller keeps the raw labels. One bounded
+ * low-temperature call.
+ */
+export async function resolveSpeakers(opts: {
+  title: string;
+  channel: string;
+  transcript: string;
+  labels: string[];
+}): Promise<{ video_type: VideoType; speakers: string[]; labelMap: Record<string, string> }> {
+  const labels = opts.labels.filter(Boolean);
+  if (labels.length < 2) {
+    // One voice (or none) → monologue; nothing to name.
+    return { video_type: "monologue", speakers: [], labelMap: {} };
+  }
+  try {
+    const sample = sampleTranscript(opts.transcript);
+    const { text } = await chat({
+      system: RESOLVE_SPEAKERS_SYSTEM_PROMPT,
+      user: resolveSpeakersUserPrompt({ videoTitle: opts.title, channel: opts.channel, labels, sample }),
+      maxTokens: 1024,
+      timeoutMs: 20000,
+      temperature: 0.2,
+    });
+    const parsed = parseJsonObject<{
+      video_type?: string;
+      label_map?: Record<string, unknown>;
+      speakers?: unknown;
+    }>(text);
+    const labelMap: Record<string, string> = {};
+    for (const label of labels) {
+      const v = parsed.label_map?.[label];
+      if (typeof v === "string" && v.trim()) labelMap[label] = v.trim();
+    }
+    const speakers = Array.isArray(parsed.speakers)
+      ? parsed.speakers.filter((s): s is string => typeof s === "string" && !!s.trim()).slice(0, 12)
+      : Object.values(labelMap);
+    return {
+      video_type: parsed.video_type === "monologue" ? "monologue" : "dialogue",
+      speakers,
+      labelMap,
+    };
+  } catch {
+    // Keep raw labels; still a dialogue since there are ≥2 speakers.
+    return { video_type: "dialogue", speakers: labels, labelMap: {} };
+  }
+}
+
 interface GenerateOpts {
   chunkIndex: number;
   chunkTotal: number;
@@ -451,14 +504,25 @@ export async function generationSelfTest(): Promise<{
   };
 }
 
+/** Strip metadata the model may have wrongly copied into text: a [SPEAKER: …] tag, a
+ *  leading [m:ss] marker, or a leading "Name:" prefix. Also lifts a stray tag into the
+ *  speaker field if the block itself has none. */
 function sanitizeBlock(b: NoteBlock): NoteBlock {
-  const out: NoteBlock = {
-    type: b.type,
-    text: b.text,
-  } as NoteBlock;
+  let text = typeof b.text === "string" ? b.text : "";
+  let speaker = b.speaker;
 
-  if (b.speaker) out.speaker = b.speaker;
+  const tag = text.match(/\[SPEAKER:\s*([^\]]+)\]/i);
+  if (tag && !speaker) speaker = tag[1].trim();
+  text = text.replace(/\[SPEAKER:\s*[^\]]+\]/gi, " ");
+  text = text.replace(/\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/g, " "); // stray [m:ss]/[h:mm:ss]
+  if (speaker) {
+    const esc = speaker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`^\\s*${esc}\\s*:\\s*`, "i"), "");
+  }
+  text = text.replace(/\s{2,}/g, " ").replace(/^[\s,]+/, "").trim();
+
+  const out: NoteBlock = { type: b.type, text } as NoteBlock;
+  if (speaker) out.speaker = speaker;
   if (b.timestamp) out.timestamp = b.timestamp;
-
   return out;
 }
