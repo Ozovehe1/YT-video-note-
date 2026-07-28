@@ -124,11 +124,24 @@ class Pipeline:
             "noprogress": True,
             "retries": 5,
             "proxy": proxy,  # ← routes the YouTube fetch through the phone's residential IP
+            # Ask YouTube via its mobile/TV player clients instead of the plain `web`
+            # client. These often avoid the "confirm you're not a bot" gate without
+            # cookies; yt-dlp tries them in order and uses the first that returns audio.
+            "extractor_args": {"youtube": {"player_client": ["tv", "ios", "mweb", "web_safari", "android"]}},
             "postprocessors": [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "wav", "preferredquality": "0"}
             ],
             "postprocessor_args": {"FFmpegExtractAudio": ["-ar", "16000", "-ac", "1"]},
         }
+        # Reliable path past the bot gate: if a Netscape-format cookies.txt is provided
+        # (YT_COOKIES key on the Modal secret), download as a signed-in user. No code
+        # change needed to enable it later — just add the secret value.
+        cookies = os.environ.get("YT_COOKIES")
+        if cookies and cookies.strip():
+            cookie_path = os.path.join(out_dir, "cookies.txt")
+            with open(cookie_path, "w") as fh:
+                fh.write(cookies)
+            opts["cookiefile"] = cookie_path
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([youtube_url])
         for name in os.listdir(out_dir):
