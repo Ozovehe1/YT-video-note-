@@ -82,10 +82,10 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
       <div className="mx-auto max-w-md text-center">
         <Loader2 className="mx-auto h-8 w-8 animate-spin text-oxblood" />
         <h2 className="mt-5 font-display text-2xl font-semibold text-ink">
-          Fetching the transcript…
+          Starting your note…
         </h2>
         <p className="mt-2 text-muted">
-          Pulling captions and splitting them up — you&rsquo;ll be reading in a moment.
+          Sending the video off to be transcribed — you&rsquo;ll see live progress next.
         </p>
       </div>
     );

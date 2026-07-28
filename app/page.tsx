@@ -22,7 +22,7 @@ export default function Home() {
           <div className="mt-8 max-w-xl">
             <HeroSearch />
             <p className="mt-3 pl-1 text-sm text-muted">
-              Free to start · works with any captioned video.
+              Free to start · works with any YouTube video.
             </p>
           </div>
         </div>
