@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
 
 export const maxDuration = 60;
 
+const AUDIO_BUCKET = "audio";
+
 /**
- * Create a note. The audio is fetched + transcribed on the user's machine by the local
- * helper (residential IP, diarizing ASR), so here we only resolve the video's metadata
- * and queue the note as `awaiting_audio`. The helper picks it up, transcribes, and posts
- * the diarized transcript back, which flips the note to `processing`.
+ * Create a note from an audio file the user downloaded on their phone (e.g. with Seal) and
+ * uploaded to Supabase Storage. YouTube is only used for METADATA (title/thumbnail via the
+ * Data API — not blocked); the audio itself never comes from the server. We resolve the
+ * metadata, hand Modal a short-lived signed URL to the uploaded audio, and let the ASR
+ * callback flip the note to `processing`.
  */
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -19,22 +23,33 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
-  let body: { input?: string; videoId?: string };
+  let body: { input?: string; videoId?: string; audioPath?: string };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
 
+  // The uploaded audio is required — it's what gets transcribed.
+  const audioPath = typeof body.audioPath === "string" ? body.audioPath.trim() : "";
+  if (!audioPath) {
+    return NextResponse.json({ error: "Upload the audio file first." }, { status: 422 });
+  }
+  // Guard: the path must live under the caller's own folder (matches the Storage RLS).
+  if (!audioPath.startsWith(`${user.id}/`)) {
+    return NextResponse.json({ error: "That file isn't yours." }, { status: 403 });
+  }
+
   const videoId = body.videoId ?? (body.input ? extractVideoId(body.input) : null);
   if (!videoId) {
     return NextResponse.json(
-      { error: "That doesn't look like a valid YouTube link or video id." },
+      { error: "Also paste the YouTube link so we can title the note." },
       { status: 422 },
     );
   }
 
-  // Metadata (title/channel/thumbnail/duration)
+  // Metadata (title/channel/thumbnail/duration) — the Data API isn't subject to the
+  // download bot-gate, so this stays reliable.
   let meta: Awaited<ReturnType<typeof fetchVideoMeta>>;
   try {
     meta = await fetchVideoMeta(videoId);
@@ -65,10 +80,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not save the note." }, { status: 500 });
   }
 
-  // Kick off the cloud transcription job (Modal downloads the audio via the residential
-  // exit node, diarizes it, and calls our webhook back). Fire-and-forget: it's async.
+  // Hand Modal a short-lived signed URL to the uploaded audio; it transcribes and calls
+  // our webhook back. Fire-and-forget from the user's perspective.
   try {
-    await startTranscription({ request, videoUrl, noteId: note.id });
+    await startTranscription({ request, audioPath, noteId: note.id });
   } catch (err) {
     console.error("[notes] failed to start transcription:", err);
     await supabase
@@ -78,18 +93,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Couldn't start transcription." }, { status: 502 });
   }
 
-  // Make sure the new note appears right away wherever notes are listed.
   revalidatePath("/library");
   revalidatePath("/");
 
   return NextResponse.json({ id: note.id });
 }
 
-/** Trigger the Modal transcription endpoint for a note. */
-async function startTranscription(opts: { request: Request; videoUrl: string; noteId: string }) {
+/** Sign the uploaded audio and trigger the Modal transcription endpoint. */
+async function startTranscription(opts: { request: Request; audioPath: string; noteId: string }) {
   const endpoint = process.env.MODAL_TRANSCRIBE_URL;
   const secret = process.env.ASR_WEBHOOK_SECRET;
   if (!endpoint || !secret) throw new Error("Transcription endpoint is not configured.");
+
+  // Service-role client to mint a signed URL Modal can fetch (bucket is private).
+  const admin = createAdminClient();
+  const { data: signed, error: signErr } = await admin.storage
+    .from(AUDIO_BUCKET)
+    .createSignedUrl(opts.audioPath, 60 * 60); // 1 hour is plenty for the job to start
+  if (signErr || !signed?.signedUrl) {
+    throw new Error(`Could not sign the audio URL: ${signErr?.message ?? "unknown"}`);
+  }
 
   const hdrs = opts.request.headers;
   const host = hdrs.get("x-forwarded-host") ?? hdrs.get("host");
@@ -100,7 +123,7 @@ async function startTranscription(opts: { request: Request; videoUrl: string; no
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      youtube_url: opts.videoUrl,
+      audio_url: signed.signedUrl,
       note_id: opts.noteId,
       callback_url: callbackUrl,
       secret,
