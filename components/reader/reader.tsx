@@ -529,11 +529,16 @@ function GeneratingState({
   let kicker: string;
   let heading: string;
   let sub: string;
-  if (note.status === "awaiting_audio" || note.status === "transcribing") {
+  if (note.status === "awaiting_audio") {
+    kicker = "Queued";
+    heading = "Waiting for your phone";
+    sub =
+      "Your phone helper will fetch this video’s audio and hand it off to be transcribed. Make sure the helper is running — it keeps going once it does.";
+  } else if (note.status === "transcribing") {
     kicker = "Transcribing";
     heading = "Transcribing the audio";
     sub =
-      "Fetching the audio and running speaker-aware transcription. A long video can take a few minutes — you can leave; it keeps going.";
+      "Running speaker-aware transcription. A long video can take a few minutes — you can leave; it keeps going.";
   } else {
     kicker = preparing ? "Preparing" : "Writing";
     heading = preparing ? "Reading the transcript" : "Writing your note";

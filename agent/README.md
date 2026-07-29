@@ -1,58 +1,57 @@
-# Verbatim audio pipeline (Modal + your phone as a free residential exit node)
+# Verbatim phone helper ("automated Seal")
 
-Audio is downloaded and transcribed **entirely in the cloud** — nothing runs on a computer.
-`modal_asr.py` deploys a Modal app that:
+YouTube blocks datacenter IPs (any cloud server), so the download can't run on the
+server — it has to come from a normal residential connection. That's exactly why apps
+like Seal work: they run on your phone. This helper does the same thing, automatically:
+it runs on your phone, downloads each note's audio with `yt-dlp`, and hands it to the app.
 
-1. Receives a trigger from the web app (`{youtube_url, note_id, callback_url}`).
-2. Routes the YouTube download through **your phone** (a free Tailscale exit node), so it
-   comes from a residential IP and YouTube doesn't block it.
-3. Downloads audio with **yt-dlp**, transcribes + diarizes with
-   **OpenMOSS-Team/MOSS-Transcribe-Diarize**, and HMAC-POSTs the speaker-attributed
-   segments back to the app's `/api/notes/asr-callback`.
+**You still just paste a link in the app.** The helper does the fetching in the background.
 
-## One-time setup
-
-### 1. Your phone → free residential exit node
-- Install **Tailscale** (Play Store / App Store), sign in.
-- Enable **Use as exit node** in the app.
-- In **admin.tailscale.com** (works in a mobile browser): approve the phone as an exit node,
-  and **Settings → Keys → Generate auth key** (make it **reusable**). Note the phone's device
-  name (e.g. `pixel-8`).
-- Keep the phone **plugged in, on Wi‑Fi, with battery optimization off for Tailscale**.
-
-### 2. Modal secret
-One secret named `tailscale` holding all three keys (dashboard → Secrets → Create → Custom, or CLI):
 ```
-modal secret create tailscale \
-  TS_AUTHKEY=tskey-... \
-  TS_EXIT_NODE=<your-phone's Tailscale 100.x IP> \
-  ASR_WEBHOOK_SECRET=<long-random-string>
+app (paste link) → note "awaiting_audio"
+   → phone helper polls, yt-dlp downloads the audio (your home IP), uploads it
+   → app sends the audio to Modal → transcribes → your note appears
 ```
 
-### 3. Deploy
-From a **Modal Notebook** (phone-friendly): paste `modal_asr.py` into a cell, add `app.deploy()`
-at the end, run it. Or CLI: `modal deploy agent/modal_asr.py`.
-Copy the printed **`…/transcribe`** URL.
+## Files
+- `verbatim_agent.py` — the helper (poll → download → upload → notify).
+- `requirements.txt` — `yt-dlp`, `requests`.
+- `modal_asr.py` — the Modal ASR app (deploy separately in a Modal Notebook).
 
-### 4. Web app env (Vercel)
-- `MODAL_TRANSCRIBE_URL` = the `…/transcribe` URL
-- `ASR_WEBHOOK_SECRET` = the **same** value as the `asr-webhook` Modal secret
-- `SUPABASE_SERVICE_ROLE_KEY` = your Supabase service-role key (the callback bypasses RLS)
+## One-time setup on your phone (Termux)
 
-Also run `supabase/migrations/0002_agent.sql` once (adds the `transcribing` status).
+1. Install **Termux** and **Termux:Boot** from F-Droid (not the Play Store version).
+2. In Termux:
+   ```sh
+   pkg update && pkg install -y python ffmpeg
+   pip install yt-dlp requests
+   ```
+3. Get `verbatim_agent.py` onto the phone (e.g. `curl -O` the raw file from the repo, or
+   paste it into a file).
+4. Generate an **agent token** in the app: **Settings → Connect your phone → Generate token**
+   (copy it — shown once).
+5. Set your config and run it:
+   ```sh
+   export VERBATIM_URL="https://your-app.vercel.app"
+   export VERBATIM_AGENT_TOKEN="vba_...paste the token..."
+   python verbatim_agent.py
+   ```
+   You should see `verbatim helper started; polling …`. Create a note in the app and watch
+   it download + hand off.
 
-## How a note flows
+## Keep it running
+Android kills background apps. To make the helper survive:
+- Disable **battery optimization** for Termux (Android Settings → Apps → Termux → Battery → Unrestricted).
+- Use **Termux:Boot**: put a script in `~/.termux/boot/` that exports the two env vars and
+  runs `python /path/to/verbatim_agent.py`, so it starts on reboot.
+- Optionally `termux-wake-lock` to hold a wake lock while it runs.
 
-Create a note → it's `transcribing` → Modal downloads via your phone's IP + MOSS diarizes →
-webhook posts the transcript back → note becomes `processing` → notes are written with correct,
-voice-based speakers. All driven from your phone; the only always-on thing is Tailscale on the
-phone, which just relays the download traffic.
+If the helper isn't running, new notes just wait in **"Waiting for your phone"** until it is —
+nothing is lost.
 
-## Notes
-
-- Tailscale runs in **userspace mode** inside Modal (no privileged TUN needed) and exposes a
-  local SOCKS5 proxy that only yt-dlp uses — the callback egresses normally.
-- MOSS handles up to ~90 min of audio in one pass; bump `MOSS_MAX_NEW_TOKENS` for very long,
-  dense videos, or we add audio windowing.
-- Cost: Modal GPU (has free monthly credits) + Tailscale free tier + your phone's data. No proxy
-  fees.
+## Config (env)
+| Var | Meaning |
+|---|---|
+| `VERBATIM_URL` | Your app's URL, e.g. `https://your-app.vercel.app` |
+| `VERBATIM_AGENT_TOKEN` | The token from Settings → Connect your phone |
+| `VERBATIM_POLL_SECONDS` | Poll interval (default 20) |
