@@ -1,6 +1,7 @@
 package com.verbatim.helper
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,17 +9,20 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.webkit.WebView
+import android.text.InputType
+import android.webkit.JavascriptInterface
 import android.webkit.WebViewClient
+import android.widget.EditText
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.verbatim.helper.databinding.ActivityMainBinding
 
 /**
- * The app shell: a WebView on the live Verbatim site plus a small bar to paste the
- * agent token and Start/Stop the background downloader. The user pastes a link in the
- * web app exactly as before; this phone does the downloading.
+ * The app shell: a WebView on the live Verbatim site plus a slim status strip. The token
+ * is generated inside the web view and handed to the downloader by a JS bridge (the web
+ * "Connect this device" button), so the user never types it. Once connected the strip just
+ * shows the live status ("Polling…") with a Stop button.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -26,11 +30,14 @@ class MainActivity : AppCompatActivity() {
     private var running = false
 
     private val requestNotif =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { start() }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { startServiceNow() }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            b.statusText.text = intent?.getStringExtra("text") ?: Prefs.status(this@MainActivity)
+            val text = intent?.getStringExtra("text") ?: Prefs.status(this@MainActivity)
+            b.statusText.text = text
+            running = text.isNotBlank() && text != "Stopped"
+            render()
         }
     }
 
@@ -39,14 +46,18 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
 
-        b.tokenInput.setText(Prefs.token(this))
-        b.statusText.text = Prefs.status(this)
+        val status = Prefs.status(this)
+        b.statusText.text = status
+        running = status.isNotBlank() && status != "Stopped" && status != "Not connected"
 
         setupWebView()
+        render()
 
         b.toggleButton.setOnClickListener {
-            if (running) stop() else ensureNotifThenStart()
+            if (running) stop() else b.webView.loadUrl("${Prefs.BASE_URL}/settings")
         }
+        // Fallback for advanced users / the browser case: long-press to paste a token by hand.
+        b.statusText.setOnLongClickListener { promptManualToken(); true }
     }
 
     override fun onResume() {
@@ -74,33 +85,71 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
         }
         b.webView.webViewClient = WebViewClient()
+        b.webView.addJavascriptInterface(WebBridge(), "VerbatimNative")
         b.webView.loadUrl(Prefs.BASE_URL)
     }
 
-    private fun ensureNotifThenStart() {
-        Prefs.setToken(this, b.tokenInput.text.toString())
+    /** Save the token and start the downloader (requesting the notification permission first). */
+    private fun connectWithToken(token: String) {
+        if (token.isBlank()) return
+        Prefs.setToken(this, token)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
             requestNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            start()
+            startServiceNow()
         }
     }
 
-    private fun start() {
-        Prefs.setToken(this, b.tokenInput.text.toString())
+    private fun startServiceNow() {
         ContextCompat.startForegroundService(this, Intent(this, DownloaderService::class.java))
         running = true
-        b.toggleButton.text = "Stop"
+        b.statusText.text = "Starting…"
+        render()
     }
 
     private fun stop() {
         startService(Intent(this, DownloaderService::class.java).setAction(DownloaderService.ACTION_STOP))
         running = false
-        b.toggleButton.text = "Start"
         b.statusText.text = "Stopped"
+        render()
+    }
+
+    private fun render() {
+        b.toggleButton.text = if (running) "Stop" else "Connect"
+    }
+
+    private fun promptManualToken() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            hint = "vba_…"
+            setText(Prefs.token(this@MainActivity))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Paste your token")
+            .setMessage("From Settings → Connect your phone. (Normally the “Connect this device” button does this for you.)")
+            .setView(input)
+            .setPositiveButton("Connect") { _, _ -> connectWithToken(input.text.toString().trim()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Bridge exposed to the web app as `window.VerbatimNative`. */
+    inner class WebBridge {
+        @JavascriptInterface
+        fun connect(token: String) {
+            runOnUiThread { connectWithToken(token) }
+        }
+
+        @JavascriptInterface
+        fun stop() {
+            runOnUiThread { this@MainActivity.stop() }
+        }
+
+        @JavascriptInterface
+        fun isRunning(): Boolean = running
     }
 
     override fun onDestroy() {
