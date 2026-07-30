@@ -1,22 +1,64 @@
 # Verbatim
 
-Turn any YouTube video into a faithful, structured **reading note** — then read it in a premium,
-themeable reader that remembers your place, or export it to PDF, DOCX, Markdown, or EPUB.
+Turn any YouTube video into a faithful, **speaker-attributed** reading note — then read it in a
+premium, themeable reader that remembers your place, or export it to PDF, DOCX, Markdown, or EPUB.
 
-Search a video by **title** (no need to find the link yourself) or paste a URL. Verbatim pulls the
-timestamped transcript, detects whether it's a **monologue** or a **dialogue**, and writes a
-complete note that mirrors the video's own structure — in order, nothing summarized away. Longer
-video → longer read.
+Search a video by **title** (no need to find the link yourself) or paste a URL. Verbatim listens to
+the actual audio, separates **who is speaking** (real diarization, not guessed), and lays the whole
+thing out **in order, verbatim** — nothing summarized away. A dialogue reads as *Speaker 1 / Speaker
+2* turns with per-paragraph timestamps; a monologue reads as one voice. Longer video → longer read,
+up to multi-hour talks.
 
-Built with **Next.js** (App Router) + **NVIDIA-hosted LLMs** (Llama / DeepSeek) + **Supabase**, deployable free on **Vercel**.
+Built with **Next.js** (App Router) + **Supabase** + a **Modal** GPU transcription service, with the
+YouTube download handled on **your phone**. Deployable free on **Vercel**.
+
+> **No LLM.** The note *is* the transcript, structured deterministically from the ASR output — so
+> there's nothing to hallucinate, nothing gets compressed, and note generation costs \$0.
 
 ---
+
+## How it works
+
+YouTube blocks audio/caption downloads from datacenter IPs (Vercel, AWS, Modal — all of them), so the
+download can't run on a server. It has to come from a normal **residential connection** — which is
+exactly why apps like Seal are reliable: they run on your phone. Verbatim does the same thing,
+automatically. You only ever paste a link; a small helper on your phone does the fetching.
+
+```
+Web app (Next.js on Vercel)
+  1. You paste a link / search a title  →  note created as "awaiting_audio"     (app/api/notes)
+
+Your phone  (Android app in mobile/, or the Termux helper in agent/)
+  2. Polls the agent API, claims the note, and downloads bestaudio with yt-dlp
+     from your home IP, then uploads the audio to Supabase Storage             (app/api/agent/*)
+
+Modal  (GPU service, agent/modal_asr.py)
+  3. App hands Modal a short-lived signed URL to that audio. Modal fetches it,
+     transcribes + diarizes with MOSS-Transcribe-Diarize (long audio is split
+     into ~80-min chunks so any length works), and POSTs the speaker-labeled
+     segments back, authenticated by an HMAC signature                        (app/api/notes/asr-callback)
+
+Web app
+  4. Turns the segments into sections deterministically — one paragraph per
+     ASR segment, its own timestamp, "Speaker N" labels — and marks the note
+     ready. Read it, resume it, export it.                                     (lib/asr-format.ts)
+```
+
+**Why this design**
+- **Reliable downloads** — yt-dlp runs on your phone's residential IP (the only thing YouTube doesn't
+  gate), and auto-updates absorb YouTube changes. Modal never touches YouTube.
+- **Real speaker attribution** — captions have no speaker labels and many videos have none at all.
+  Transcribing the audio with a diarizing model gives true turns, not inferred ones.
+- **Any length** — MOSS does a single pass up to ~90 min; longer audio is chunked and stitched back on
+  an absolute timeline, so a 5-hour video is just ~4 passes.
+- **Timeout-proof + cheap** — Vercel never handles YouTube or big audio; the GPU work is off on Modal;
+  structuring the note is pure code.
 
 ## Features
 
 - **Search-first entry** — find videos by title via the YouTube Data API, or paste any link.
-- **Faithful notes** — full timestamped transcript in, generated **section-by-section in order** so
-  nothing gets compressed. Dialogues get per-speaker attribution.
+- **Faithful, speaker-attributed notes** — the full transcript, in order, split into *Speaker 1 /
+  Speaker 2* paragraphs (dialogue) or a single voice (monologue), each paragraph timestamped.
 - **Premium reader** — paginated (page count scales with length), a table of contents, four themes
   (Paper / Sepia / Night / High-contrast), serif/sans toggle, size and width controls, keyboard nav.
 - **Resume where you left off** — reading position is saved per note; the library shows progress.
@@ -25,111 +67,132 @@ Built with **Next.js** (App Router) + **NVIDIA-hosted LLMs** (Llama / DeepSeek) 
   server-side from the same structured note (no headless browser, so it runs on Vercel's free tier).
 - **Accounts + privacy** — Supabase Auth with Row-Level Security; users only ever see their own data.
 
-## Architecture
+## The phone helper
 
-```
-Next.js on Vercel
-  ├─ YouTube Data API   → search by title + video metadata      (lib/youtube.ts)
-  ├─ Supadata           → timestamped transcript (works on Vercel IPs)  (lib/supadata.ts)
-  ├─ NVIDIA LLM API     → chunked note generation → structured blocks   (lib/llm.ts)
-  │    (OpenAI-compatible; auto model fallback across a list)
-  └─ Supabase           → Postgres (notes, sections, progress) + Auth, all RLS-protected
-```
+The residential-IP download runs on your phone. Two ways to run it — pick one:
 
-**Why Supadata for transcripts?** YouTube blocks caption scraping from datacenter IPs, including
-Vercel's. A hosted transcript API is the only reliable way to fetch transcripts from a cloud host.
+- **Android app (recommended, easiest)** — a real installable app that shows the live web app *and*
+  runs the downloader as a background service. No commands. Built in the cloud by a GitHub Action, so
+  you don't need a computer. **See [`mobile/README.md`](mobile/README.md).**
+- **Termux script (\$0, no app install)** — a small Python script under `agent/` that does the same
+  poll → download → upload loop. **See [`agent/README.md`](agent/README.md).**
 
-**Why chunked generation?** Vercel serverless functions are short-lived (~60s), but a full note for a
-long video takes minutes. The client creates the note, then calls `generate-next` in a loop — each
-call renders one transcript chunk into sections, so no single request runs long, and you see live
-progress.
+Both use the same agent API and are multi-user: each person signs into their own account, generates
+their own token in **Settings → Connect your phone**, and pastes it in. Jobs are scoped by token.
 
 ## Getting started
 
 ### 1. Prerequisites (all have free tiers)
 
-| Service | Used for | Get a key |
+| Service | Used for | Get it |
 |---|---|---|
-| **NVIDIA (DeepSeek v4 Pro)** | Writing the notes | <https://build.nvidia.com/> |
-| **Supabase** | Accounts + data | <https://supabase.com/> (create a project) |
-| **Supadata** | Transcripts | <https://supadata.ai/> |
-| **YouTube Data API v3** | Title search | Google Cloud Console → enable *YouTube Data API v3* → API key |
+| **Supabase** | Accounts, data, audio storage | <https://supabase.com/> (create a project) |
+| **Modal** | GPU transcription (MOSS diarizing ASR) | <https://modal.com/> |
+| **YouTube Data API v3** | Title search + video metadata | Google Cloud Console → enable *YouTube Data API v3* → API key |
+| **A phone** | Downloading audio on a residential IP | Android (app or Termux) |
 
 ### 2. Set up Supabase
 
-Create a project, then in the **SQL Editor** run the schema in
-[`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql). It creates the tables,
-Row-Level Security policies, and a trigger that gives every new user a profile row.
+Create a project, then in the **SQL Editor** run the migrations in order:
 
-Only the **publishable (anon)** key is needed — there is **no service-role/secret key** anywhere in
-this app. RLS does the access control.
+- [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) — tables, RLS policies, and
+  a trigger that gives every new user a profile row.
+- [`supabase/migrations/0002_agent.sql`](supabase/migrations/0002_agent.sql) — agent tokens + the
+  `awaiting_audio` / `transcribing` note statuses.
+- [`supabase/migrations/0003_storage.sql`](supabase/migrations/0003_storage.sql) — the private `audio`
+  storage bucket the phone uploads to.
 
-### 3. Configure environment
+Two keys are used: the **publishable (anon)** key for the browser app (RLS enforces access), and the
+**service-role** key server-side for the agent endpoints and the Modal callback (which have no browser
+session and must bypass RLS — they're authenticated by the agent token and an HMAC signature instead).
+
+### 3. Deploy the Modal ASR service
+
+Open [`agent/modal_asr.py`](agent/modal_asr.py) in a Modal Notebook, add `app.deploy()`, and run it.
+Create one Modal **secret** named `tailscale` holding `ASR_WEBHOOK_SECRET` (the same value you put in
+the app env below). The deployed endpoint URL — `https://<workspace>--verbatim-asr-transcribe.modal.run`
+— is stable; use it as `MODAL_TRANSCRIBE_URL`.
+
+### 4. Configure environment
 
 ```bash
 cp .env.example .env.local   # then fill in your keys
 ```
 
 ```
-NVIDIA_API_KEY=nvapi-...
-LLM_MODEL=deepseek-ai/deepseek-v4-flash
-LLM_FALLBACK_MODELS=meta/llama-3.1-8b-instruct,meta/llama-3.3-70b-instruct,deepseek-ai/deepseek-v4-pro
-LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+# Supabase (accounts, history, reading progress, audio storage)
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...
-SUPADATA_API_KEY=sd_...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=eyJ...          # publishable (anon) key
+SUPABASE_SERVICE_ROLE_KEY=eyJ...                     # server-only; agent API + Modal callback
+
+# YouTube Data API (search by title + metadata)
 YOUTUBE_API_KEY=AIza...
+
+# Modal transcription
+MODAL_TRANSCRIBE_URL=https://YOUR--verbatim-asr-transcribe.modal.run
+ASR_WEBHOOK_SECRET=change-me-to-a-long-random-string # SAME value as the Modal `tailscale` secret
 ```
 
-Note generation tries `LLM_MODEL` first, then each model in `LLM_FALLBACK_MODELS`,
-and automatically uses the first one that's healthy — so if a hosted model goes
-down on the provider's side, notes keep generating with no change needed.
-
-### 4. Run
+### 5. Run
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Open <http://localhost:3000>, sign up, and make your first note.
+Open <http://localhost:3000>, sign up, connect your phone (Settings → Connect your phone), and make
+your first note.
 
 ## Deploy to Vercel
 
 1. Push this repo to GitHub and import it in Vercel.
 2. Add the environment variables above in **Project → Settings → Environment Variables**.
 3. In Supabase → **Authentication → URL Configuration**, add your Vercel URL to the redirect allow-list
-   (for email confirmation). Set the Site URL to your deployed domain.
-4. Deploy. Transcripts and search work from Vercel's IPs because they go through Supadata / the
-   YouTube API rather than scraping YouTube directly.
+   and set the Site URL to your deployed domain.
+4. Deploy. Search and metadata work from Vercel's IPs (YouTube Data API); the audio download runs on
+   your phone; transcription runs on Modal — so Vercel never hits YouTube's bot gate.
 
 ## Project layout
 
 ```
 app/
-  page.tsx                     home (editorial hero + search)
-  new/                         search results + chunked generation progress
-  library/                     your saved reads with progress
-  read/[id]/                   the reader
-  settings/                    default theme / font / size / width
-  login, signup, auth/callback
+  page.tsx                       home (editorial hero + search)
+  new/                           search results + submit
+  library/                       your saved reads with progress
+  read/[id]/                     the reader
+  settings/                      default theme / font / size / width + Connect your phone
+  login, signup, auth/callback, forgot/reset password
   api/
-    search/                    YouTube title search
-    notes/                     create note (transcript + chunk)
-    notes/[id]/generate-next/  generate one chunk → sections
-    notes/[id]/export/         PDF | DOCX | EPUB | Markdown, on demand
+    search/                      YouTube title search
+    notes/                       create note (→ awaiting_audio)
+    notes/pending/               notes still processing (status polling)
+    notes/[id]/retry/            re-queue a stuck/errored note
+    notes/[id]/export/           PDF | DOCX | EPUB | Markdown, on demand
+    notes/asr-callback/          Modal posts ASR segments here (HMAC-verified) → builds the note
+    agent/token/                 generate a phone agent token
+    agent/jobs/                  phone claims audio jobs → signed upload URL
+    agent/jobs/[id]/uploaded/    phone reports upload → app calls Modal
+    agent/jobs/[id]/error/       phone reports a failure → bounded retry
+    diag/                        env-presence diagnostics
 lib/
-  youtube, supadata, chunk, prompts, llm
-  supabase/{client,server,middleware}
+  youtube, asr-format, agent-auth, chunk, types, utils
   export/{markdown,docx,epub,pdf}
-components/                     nav, hero search, reader, note cards, settings…
-supabase/migrations/0001_init.sql
+  supabase/{client,server,middleware,admin}
+agent/                           Modal ASR app (modal_asr.py) + Termux helper (verbatim_agent.py)
+mobile/                          native Android phone-helper app (+ CI that builds the APK)
+supabase/migrations/             0001_init, 0002_agent, 0003_storage
 ```
 
 ## Notes & limits
 
-- A video must have captions/subtitles available (auto-generated captions are fine).
-- Speaker names in dialogues are **inferred** from context, since YouTube transcripts are unlabeled;
-  the reader shows the detected speakers so you know.
-- Free tiers are sized for limited users: Supabase (500MB DB / 50K MAU), Supadata + YouTube API
-  (daily quotas), Vercel Hobby.
+- **Speaker labels are neutral** (*Speaker 1*, *Speaker 2*) — they come straight from the diarizer, so
+  they're accurate turns without guessing real names.
+- **The phone must be reachable** for a note to advance. If the app/helper isn't running, notes wait in
+  **"Waiting for your phone"** until it is — nothing is lost.
+- **Very long videos** upload a large audio file to Supabase Storage (a few hundred MB for 5h); raise
+  the Storage global file-size limit if a big upload is rejected.
+- **Android only** for the phone helper. iOS can't run yt-dlp and the App Store bans YouTube
+  downloaders.
+- Free tiers are sized for limited users: Supabase (500 MB DB + 1 GB storage), YouTube API daily quota,
+  Vercel Hobby, and Modal's monthly GPU credits.
+```

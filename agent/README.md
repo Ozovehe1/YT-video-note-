@@ -7,6 +7,10 @@ it runs on your phone, downloads each note's audio with `yt-dlp`, and hands it t
 
 **You still just paste a link in the app.** The helper does the fetching in the background.
 
+> Prefer a one-tap app over Termux commands? The **native Android app** in [`../mobile`](../mobile)
+> does exactly this as a background service — install the APK, paste your token, done. This Termux
+> script is the no-install (\$0) alternative; both use the same agent API.
+
 ```
 app (paste link) → note "awaiting_audio"
    → phone helper polls, yt-dlp downloads the audio (your home IP), uploads it

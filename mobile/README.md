@@ -15,15 +15,27 @@ The backend is **unchanged**: the service calls the same agent API the Termux he
 
 ## Get the APK (no PC needed)
 
-You build it in the cloud with GitHub Actions — you don't need Android Studio or a computer.
+The APK is built in the cloud by a GitHub Action ([`.github/workflows/android.yml`](../.github/workflows/android.yml))
+on every push that touches `mobile/**` — you don't need Android Studio or a computer. Each build
+publishes the APK to a fixed **Release**, so downloading is one tap and the link never changes.
 
-1. Push this repo (already done). Open the repo on GitHub → **Actions** → **Build Android APK**.
-   The workflow runs on every push that touches `mobile/**`, or you can hit **Run workflow**.
-2. When it's green, open the run → **Artifacts** → download **`verbatim-debug-apk`** (a zip).
-3. On your phone, unzip and open `app-debug.apk`. Allow **Install unknown apps** for your browser/
-   files app when prompted, then install.
+1. Open the latest release (signed in to GitHub):
+   <https://github.com/Ozovehe1/YT-video-note-/releases/latest>
+2. Under **Assets**, tap **`verbatim.apk`** (~57 MB) — it downloads the APK directly (no zip).
+3. Open it, allow **Install unknown apps** for your browser/Files app when prompted, then install.
 
-The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup).
+Direct link (same file, always current):
+`https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk`
+
+The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup). It ships
+**arm64-v8a** native libs only, which covers every modern phone.
+
+### Sharing with others
+
+The app is multi-user — anyone can use it with their own Verbatim account. To put it on a friend's
+phone, just **send them the `verbatim.apk` file** (WhatsApp, Telegram, Bluetooth, etc.); they install
+it, sign into *their* account in the app, and paste *their own* token. (The Release download itself
+needs GitHub access to this private repo, so sharing the file directly is the easy path.)
 
 ## Use it
 
@@ -41,8 +53,8 @@ and aggressive battery savers, exclude Verbatim from battery optimization in And
 ## Notes / caveats
 
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
-- The APK is large (~50–100 MB) because it bundles a Python + yt-dlp runtime.
-- First cloud build may need a tweak or two — check the Actions log if it's red.
+- The APK is ~57 MB because it bundles a Python + yt-dlp runtime (arm64-only keeps it a third of a
+  universal build).
 - This is v1: you paste the token manually. A later version can wire the web "Connect this device"
   button straight into the service.
 
