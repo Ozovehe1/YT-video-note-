@@ -15,11 +15,13 @@ android {
         versionCode 1
         versionName "1.0"
 
-        // Ship native libs for 64-bit ARM only. Every modern phone (incl. Infinix
-        // Smart 9 / Android 14) is arm64-v8a, and dropping the other 3 ABIs cuts the
-        // APK from ~205 MB to ~65 MB. One APK, nothing to pick.
+        // Ship native libs for both ARM ABIs so the APK installs on 32-bit AND
+        // 64-bit phones. Entry "Go-class" devices (e.g. Infinix Smart 9) often run a
+        // 32-bit Android build even on a 64-bit-capable chip, so an arm64-only APK is
+        // rejected as "not compatible". Skipping x86/x86_64 (emulators only) keeps this
+        // to ~115 MB instead of the ~205 MB universal build.
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
     }
 

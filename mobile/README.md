@@ -21,14 +21,15 @@ publishes the APK to a fixed **Release**, so downloading is one tap and the link
 
 1. Open the latest release (signed in to GitHub):
    <https://github.com/Ozovehe1/YT-video-note-/releases/latest>
-2. Under **Assets**, tap **`verbatim.apk`** (~57 MB) — it downloads the APK directly (no zip).
+2. Under **Assets**, tap **`verbatim.apk`** (~115 MB) — it downloads the APK directly (no zip).
 3. Open it, allow **Install unknown apps** for your browser/Files app when prompted, then install.
 
 Direct link (same file, always current):
 `https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk`
 
-The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup). It ships
-**arm64-v8a** native libs only, which covers every modern phone.
+The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup). It ships both
+**arm64-v8a + armeabi-v7a** native libs, so it installs on 32-bit *and* 64-bit phones (entry-level
+"Go" devices often run a 32-bit Android build even on a 64-bit chip).
 
 ### Sharing with others
 
@@ -53,8 +54,8 @@ and aggressive battery savers, exclude Verbatim from battery optimization in And
 ## Notes / caveats
 
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
-- The APK is ~57 MB because it bundles a Python + yt-dlp runtime (arm64-only keeps it a third of a
-  universal build).
+- The APK is ~115 MB because it bundles a Python + yt-dlp runtime for both ARM architectures
+  (arm64-v8a + armeabi-v7a). x86/x86_64 are omitted (emulators only).
 - This is v1: you paste the token manually. A later version can wire the web "Connect this device"
   button straight into the service.
 
