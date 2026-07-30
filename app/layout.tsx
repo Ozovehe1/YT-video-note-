@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Fraunces, Newsreader, Instrument_Sans, Fragment_Mono } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
+import { SWRegister } from "@/components/sw-register";
 import { createClient } from "@/lib/supabase/server";
 
 const fraunces = Fraunces({
@@ -36,6 +37,10 @@ export const metadata: Metadata = {
     "Turn any YouTube video into a faithful, structured reading note. Search a title or paste a link.",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#4A0E14",
+};
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
   const {
@@ -49,6 +54,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       >
         <Nav />
         {children}
+        <SWRegister />
       </body>
     </html>
   );

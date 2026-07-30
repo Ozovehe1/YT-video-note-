@@ -107,7 +107,8 @@ export function Reader({
             },
             { onConflict: "user_id,note_id" },
           )
-          .then(() => {});
+          // Ignore failures (e.g. offline) — reading position resyncs next time you're online.
+          .then(() => {}, () => {});
       }, 500);
     },
     [note.id, total, userId],
