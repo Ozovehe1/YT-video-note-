@@ -15,13 +15,15 @@ android {
         versionCode 1
         versionName "1.0"
 
-        // Ship native libs for both ARM ABIs so the APK installs on 32-bit AND
-        // 64-bit phones. Entry "Go-class" devices (e.g. Infinix Smart 9) often run a
-        // 32-bit Android build even on a 64-bit-capable chip, so an arm64-only APK is
-        // rejected as "not compatible". Skipping x86/x86_64 (emulators only) keeps this
-        // to ~115 MB instead of the ~205 MB universal build.
+        // Ship 32-bit ARM (armeabi-v7a) only — the smallest APK that installs on EVERY
+        // ARM Android phone: 32-bit devices run it natively, and 64-bit devices run
+        // 32-bit apps in compat mode. The target device (Infinix Smart 9, X6532, Android
+        // 14 Go edition) runs a 32-bit OS on a 64-bit-capable chip, so a 64-bit-only APK
+        // was rejected as "not compatible". ~50 MB vs ~99 MB (dual) / ~205 MB (universal).
+        // Trade-off: 64-bit phones run the helper in 32-bit mode, which is fine for a
+        // lightweight background downloader.
         ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a'
+            abiFilters 'armeabi-v7a'
         }
     }
 

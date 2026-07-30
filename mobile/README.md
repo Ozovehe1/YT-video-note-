@@ -21,15 +21,16 @@ publishes the APK to a fixed **Release**, so downloading is one tap and the link
 
 1. Open the latest release (signed in to GitHub):
    <https://github.com/Ozovehe1/YT-video-note-/releases/latest>
-2. Under **Assets**, tap **`verbatim.apk`** (~115 MB) — it downloads the APK directly (no zip).
+2. Under **Assets**, tap **`verbatim.apk`** (~50 MB) — it downloads the APK directly (no zip).
 3. Open it, allow **Install unknown apps** for your browser/Files app when prompted, then install.
 
 Direct link (same file, always current):
 `https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk`
 
-The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup). It ships both
-**arm64-v8a + armeabi-v7a** native libs, so it installs on 32-bit *and* 64-bit phones (entry-level
-"Go" devices often run a 32-bit Android build even on a 64-bit chip).
+The APK is **debug-signed**, so it installs directly (no Play Store, no keystore setup). It ships
+**32-bit ARM (`armeabi-v7a`)** native libs — the smallest build that installs on **every** ARM phone:
+32-bit devices (e.g. Android *Go edition* phones like the Infinix Smart 9, which run a 32-bit OS even
+on a 64-bit chip) run it natively, and 64-bit devices run it in 32-bit compatibility mode.
 
 ### Sharing with others
 
