@@ -41,6 +41,10 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build debug APK
+        env:
+          # Each run gets an increasing versionCode so installs register as updates.
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Rename APK

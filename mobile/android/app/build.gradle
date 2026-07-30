@@ -7,13 +7,26 @@ android {
     namespace 'com.verbatim.helper'
     compileSdk 34
 
+    // A FIXED signing key (committed) so every build shares one signature. That lets a new
+    // APK install right over the old one — no uninstall — and is what makes auto-update work.
+    signingConfigs {
+        debug {
+            storeFile file("verbatim-debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
     defaultConfig {
         applicationId "com.verbatim.helper"
         // youtubedl-android requires minSdk 24.
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // Version comes from CI (the run number) so each build is a proper, increasing update;
+        // falls back to 1 for local builds.
+        versionCode (System.getenv("VERSION_CODE")?.toInteger() ?: 1)
+        versionName (System.getenv("VERSION_NAME") ?: "1.0")
 
         // Ship 32-bit ARM (armeabi-v7a) only — the smallest APK that installs on EVERY
         // ARM Android phone: 32-bit devices run it natively, and 64-bit devices run
