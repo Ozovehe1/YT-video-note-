@@ -14,6 +14,7 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
   const [fresh, setFresh] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -21,7 +22,7 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
       const d = await r.json();
       setTokens(d.tokens ?? []);
     } catch {
-      /* ignore */
+      /* ignore — listing is best-effort */
     }
   }, []);
 
@@ -32,17 +33,32 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
   async function create() {
     setBusy(true);
     setFresh(null);
+    setError(null);
     try {
       const r = await fetch("/api/agent/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: "phone" }),
       });
-      const d = await r.json();
+      let d: { token?: string; error?: string } = {};
+      try {
+        d = await r.json();
+      } catch {
+        /* non-JSON response */
+      }
       if (r.ok && d.token) {
         setFresh(d.token);
         load();
+      } else {
+        // Surface the real reason instead of silently doing nothing.
+        setError(
+          d.error
+            ? `${d.error} (${r.status})`
+            : `Couldn't create a token (HTTP ${r.status}). If this keeps happening, the agent_tokens table may be missing — re-run supabase/migrations/0002_agent.sql.`,
+        );
       }
+    } catch (e) {
+      setError(`Network error: ${e instanceof Error ? e.message : "request failed"}. Check your connection and that you're signed in.`);
     } finally {
       setBusy(false);
     }
@@ -58,12 +74,6 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
     }
   }
 
-  const setup = `pkg install python ffmpeg
-pip install yt-dlp requests
-export VERBATIM_URL="${appUrl}"
-export VERBATIM_AGENT_TOKEN="${fresh ?? "vba_…"}"
-python verbatim_agent.py`;
-
   return (
     <section className="rounded-2xl border border-hairline bg-surface p-5 sm:p-6">
       <div className="flex items-center gap-2.5">
@@ -72,8 +82,9 @@ python verbatim_agent.py`;
       </div>
       <p className="mt-2 text-sm leading-relaxed text-muted">
         Notes are downloaded on your phone (so they come from a normal home connection — reliable,
-        no bot walls). Install the tiny helper once in <strong>Termux</strong>, and every note you
-        create is fetched automatically. You still just paste a link in the app.
+        no bot walls). Install the <strong>Verbatim Android app</strong>, generate a token below, and
+        paste it into the app once. Every note you create is then fetched automatically — you still
+        just paste a link.
       </p>
 
       <button
@@ -84,6 +95,12 @@ python verbatim_agent.py`;
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         {tokens.length ? "Generate a new token" : "Generate token"}
       </button>
+
+      {error && (
+        <div className="mt-4 rounded-xl border border-oxblood/30 bg-oxblood/5 p-4">
+          <p className="text-xs font-medium text-oxblood">{error}</p>
+        </div>
+      )}
 
       {fresh && (
         <div className="mt-4 rounded-xl border border-oxblood/25 bg-oxblood/5 p-4">
@@ -106,23 +123,16 @@ python verbatim_agent.py`;
       )}
 
       <div className="mt-5">
-        <p className="text-sm font-medium text-ink">Set up the helper (once, in Termux):</p>
-        <div className="mt-2 flex items-start gap-2">
-          <pre className="min-w-0 flex-1 overflow-x-auto rounded-xl bg-panel px-4 py-3 font-mono text-xs leading-relaxed text-ink">
-{setup}
-          </pre>
-          <button
-            onClick={() => copy(setup, "setup")}
-            className="flex-none rounded-lg border border-hairline p-2 text-muted hover:text-ink"
-            aria-label="Copy setup"
-          >
-            {copied === "setup" ? <Check className="h-4 w-4 text-oxblood" /> : <Copy className="h-4 w-4" />}
-          </button>
-        </div>
+        <p className="text-sm font-medium text-ink">Set it up (once):</p>
+        <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm leading-relaxed text-muted">
+          <li>Install the <strong>Verbatim</strong> Android app (the APK from the project&rsquo;s Releases).</li>
+          <li>Open the app (it loads <span className="font-mono text-[0.95em]">{appUrl}</span>) and sign in.</li>
+          <li>Paste the token above into the box at the top of the app, then tap <strong>Start</strong>.</li>
+          <li>Allow the notification when asked, and exclude the app from battery optimization so it keeps running.</li>
+        </ol>
         <p className="mt-2 text-xs text-muted">
-          Grab <code className="font-mono">verbatim_agent.py</code> from the repo&rsquo;s{" "}
-          <code className="font-mono">agent/</code> folder. Keep Termux running (disable battery
-          optimization for it, and Termux:Boot to auto-start) so notes process on their own.
+          That&rsquo;s it — create a note (paste a link) and your phone fetches the audio automatically.
+          The app just needs to be running (it can be in the background).
         </p>
       </div>
 
