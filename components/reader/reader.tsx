@@ -31,11 +31,6 @@ const THEMES: { key: ReaderTheme; label: string }[] = [
   { key: "contrast", label: "Contrast" },
 ];
 
-// Pacing for the reader's own generation loop (see below).
-const DRIVE_RPM =
-  Number(process.env.NEXT_PUBLIC_LLM_RPM || process.env.NEXT_PUBLIC_GEMINI_RPM) || 30;
-const DRIVE_INTERVAL_MS = Math.ceil(60000 / DRIVE_RPM) + 500;
-const READER_NOTE_KEY = "verbatim:reader-note";
 const driveSleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function Reader({
@@ -144,73 +139,6 @@ export function Reader({
   const parts = note.chunk_total ?? 0;
   const partsDone = note.chunk_cursor ?? 0;
   const genPercent = parts > 0 ? Math.min(96, Math.round((partsDone / parts) * 100)) : 0;
-
-  // Drive generation for THIS note while it's open and unfinished. The reader is
-  // the most reliable place to do this: whatever you're looking at gets written,
-  // with no dependency on the global background loop's cross-tab leader election.
-  // It backs off (never a tight loop) and only stops on unmount or when done.
-  useEffect(() => {
-    if (note.status !== "processing") return;
-    let stopped = false;
-    try {
-      localStorage.setItem(READER_NOTE_KEY, note.id); // tell the global driver to leave this one to us
-    } catch {
-      /* ignore */
-    }
-
-    async function drive() {
-      let lastStart = 0;
-      let errStreak = 0;
-      while (!stopped) {
-        const since = Date.now() - lastStart;
-        if (lastStart && since < DRIVE_INTERVAL_MS) {
-          await driveSleep(DRIVE_INTERVAL_MS - since);
-          if (stopped) return;
-        }
-        lastStart = Date.now();
-
-        let res: Response;
-        let data: { done?: boolean; retryAfter?: number } = {};
-        try {
-          res = await fetch(`/api/notes/${note.id}/generate-next`, { method: "POST" });
-          data = await res.json().catch(() => ({}));
-        } catch {
-          await driveSleep(5000); // network blip — keep trying while open
-          continue;
-        }
-        if (stopped) return;
-
-        if (res.status === 429) {
-          await driveSleep(Math.max(15, data.retryAfter ?? 15) * 1000);
-          lastStart = 0;
-          continue;
-        }
-        if (!res.ok) {
-          // Transient/again — back off (longer if it persists) but never give up
-          // while the note is open, so an outage recovers on its own.
-          errStreak += 1;
-          await driveSleep(errStreak > 5 ? 30000 : 4000);
-          lastStart = 0;
-          continue;
-        }
-        errStreak = 0;
-        router.refresh(); // reveal new sections / status
-        if (data.done) return;
-      }
-    }
-    drive();
-
-    return () => {
-      stopped = true;
-      try {
-        if (localStorage.getItem(READER_NOTE_KEY) === note.id) {
-          localStorage.removeItem(READER_NOTE_KEY);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-  }, [note.status, note.id, router]);
 
   // While the audio is being fetched + transcribed by the local helper, poll for the
   // status to flip to "processing" so the reader advances on its own.

@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Fraunces, Newsreader, Instrument_Sans, Fragment_Mono } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
-import { BackgroundGenerator } from "@/components/background-generator";
 import { createClient } from "@/lib/supabase/server";
 
 const fraunces = Fraunces({
@@ -50,8 +49,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       >
         <Nav />
         {children}
-        {/* Keeps generating notes in the background as the user moves around. */}
-        {user && <BackgroundGenerator />}
       </body>
     </html>
   );
