@@ -3,6 +3,7 @@ import { Fraunces, Newsreader, Instrument_Sans, Fragment_Mono } from "next/font/
 import "./globals.css";
 import { Nav } from "@/components/nav";
 import { SWRegister } from "@/components/sw-register";
+import { OfflineSync } from "@/components/offline-sync";
 import { createClient } from "@/lib/supabase/server";
 
 const fraunces = Fraunces({
@@ -55,6 +56,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <Nav />
         {children}
         <SWRegister />
+        <OfflineSync />
       </body>
     </html>
   );

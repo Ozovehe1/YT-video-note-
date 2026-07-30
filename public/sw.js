@@ -9,7 +9,7 @@
  *  - YouTube thumbnails: best-effort cache-first (opaque).
  *  - Everything else (Supabase / Modal / API mutations): untouched — straight to the network.
  */
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `verbatim-static-${VERSION}`;
 const PAGE_CACHE = `verbatim-pages-${VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -18,7 +18,7 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(PAGE_CACHE)
-      .then((cache) => cache.add(OFFLINE_URL))
+      .then((cache) => cache.addAll([OFFLINE_URL, "/library"]).catch(() => cache.add(OFFLINE_URL)))
       .then(() => self.skipWaiting())
       .catch(() => self.skipWaiting()),
   );
@@ -59,18 +59,30 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  // Page navigations → network-first, fall back to cached page, then the offline page.
+  // Page navigations → network-first; offline, fall back to the exact cached page, then a
+  // cached shell of the SAME route (the client pages read the id from the URL, so any cached
+  // /read/* shell renders any note from the local store), then the offline page.
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
+        const cache = await caches.open(PAGE_CACHE);
         try {
           const fresh = await fetch(request);
-          const cache = await caches.open(PAGE_CACHE);
           cache.put(request, fresh.clone());
           return fresh;
         } catch (e) {
-          const cached = await caches.match(request);
-          return cached || (await caches.match(OFFLINE_URL)) || Response.error();
+          const exact = await cache.match(request);
+          if (exact) return exact;
+          // Same-route shell fallback (SPA): e.g. an unvisited /read/<id> reuses a cached /read/*.
+          const path = new URL(request.url).pathname;
+          const seg = "/" + (path.split("/")[1] || "");
+          const keys = await cache.keys();
+          const shell = keys.find((k) => {
+            const p = new URL(k.url).pathname;
+            return p === seg || p.startsWith(seg + "/");
+          });
+          if (shell) return (await cache.match(shell)) || (await caches.match(OFFLINE_URL));
+          return (await caches.match(OFFLINE_URL)) || Response.error();
         }
       })(),
     );
