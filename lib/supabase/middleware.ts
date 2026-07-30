@@ -41,6 +41,17 @@ export async function updateSession(request: NextRequest) {
 
   // Website is info-only in a browser: send app pages back to the landing unless we're in the app.
   const isApp = (request.headers.get("user-agent") || "").includes("VerbatimApp");
+
+  // Inside the app, "/" is the app home, not the marketing landing. The Verbatim brand logo links
+  // to "/", so without this any tap on it would dump the user onto the info-only landing and strand
+  // them there. Redirect the app's "/" to /library; browsers still get the landing at "/".
+  if (isApp && path === "/") {
+    const home = request.nextUrl.clone();
+    home.pathname = "/library";
+    home.search = "";
+    return NextResponse.redirect(home);
+  }
+
   const isAppOnly = APP_ONLY.some((p) => path === p || path.startsWith(p + "/"));
   if (isAppOnly && !isApp) {
     const home = request.nextUrl.clone();
