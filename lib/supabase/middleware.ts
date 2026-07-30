@@ -3,7 +3,13 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const PROTECTED = ["/library", "/settings", "/read", "/new"];
 
-/** Refreshes the Supabase auth session cookie and gates protected routes. */
+// These pages are the actual app — they only work INSIDE the Verbatim Android app (which tags
+// its User-Agent with "VerbatimApp"). A normal browser gets the info-only website, so any of
+// these is redirected to the landing. Email-flow routes (/auth/callback, reset/forgot password)
+// are intentionally NOT here — they must open from a link in a browser.
+const APP_ONLY = ["/library", "/settings", "/read", "/new", "/login", "/signup"];
+
+/** Refreshes the Supabase auth session cookie and gates protected + app-only routes. */
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -32,6 +38,17 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
+
+  // Website is info-only in a browser: send app pages back to the landing unless we're in the app.
+  const isApp = (request.headers.get("user-agent") || "").includes("VerbatimApp");
+  const isAppOnly = APP_ONLY.some((p) => path === p || path.startsWith(p + "/"));
+  if (isAppOnly && !isApp) {
+    const home = request.nextUrl.clone();
+    home.pathname = "/";
+    home.search = "";
+    return NextResponse.redirect(home);
+  }
+
   const isProtected = PROTECTED.some((p) => path === p || path.startsWith(p + "/"));
   if (!user && isProtected) {
     const redirect = request.nextUrl.clone();

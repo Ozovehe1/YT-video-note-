@@ -1,10 +1,35 @@
 import Link from "next/link";
+import { headers } from "next/headers";
+import { Download } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/app/actions/auth";
 import { Brand } from "./brand";
 import { NavAccount } from "./nav-account";
 
+const APK_URL =
+  "https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk";
+
 export async function Nav() {
+  // The app tags its User-Agent with "VerbatimApp". A normal browser sees the info-only
+  // website, so its nav is just the brand + a download button (no sign-in / app links).
+  const isApp = ((await headers()).get("user-agent") || "").includes("VerbatimApp");
+
+  if (!isApp) {
+    return (
+      <header className="sticky top-0 z-40 border-b border-hairline bg-paper/85 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
+          <Brand />
+          <a
+            href={APK_URL}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-oxblood px-3.5 py-2 text-sm font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
+          >
+            <Download className="h-4 w-4" /> Download
+          </a>
+        </div>
+      </header>
+    );
+  }
+
   const supabase = await createClient();
   const {
     data: { user },

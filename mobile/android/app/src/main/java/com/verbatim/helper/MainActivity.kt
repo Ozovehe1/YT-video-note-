@@ -99,10 +99,13 @@ class MainActivity : AppCompatActivity() {
         b.webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // Tag the User-Agent so the server knows this is the app and serves the full app
+            // (the plain website is info-only). Also load the app entry, not the landing.
+            userAgentString = "$userAgentString VerbatimApp/1"
         }
         b.webView.webViewClient = WebViewClient()
         b.webView.addJavascriptInterface(WebBridge(), "VerbatimNative")
-        b.webView.loadUrl(Prefs.BASE_URL)
+        b.webView.loadUrl("${Prefs.BASE_URL}/library")
     }
 
     /** Save the token and start the downloader (requesting the notification permission first). */
