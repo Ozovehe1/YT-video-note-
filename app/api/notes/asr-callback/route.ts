@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, title, channel, error_message")
+    .select("id, user_id, title, channel, error_message")
     .eq("id", noteId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
@@ -107,6 +107,19 @@ export async function POST(request: Request) {
       error_message: null,
     })
     .eq("id", noteId);
+
+  // The audio was only needed for this one ASR pass — delete it from Storage so files don't
+  // pile up against the free quota. Matches every attempt's file (`<noteId>-<uuid>.audio`).
+  // Best-effort: never fail the callback if cleanup hiccups.
+  try {
+    const { data: files } = await admin.storage
+      .from("audio")
+      .list(note.user_id, { search: `${noteId}-` });
+    const paths = (files ?? []).map((f) => `${note.user_id}/${f.name}`);
+    if (paths.length) await admin.storage.from("audio").remove(paths);
+  } catch {
+    /* leave the file; it can be cleaned up later */
+  }
 
   return NextResponse.json({ ok: true, sections: rows.length });
 }
