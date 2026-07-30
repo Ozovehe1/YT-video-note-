@@ -135,8 +135,8 @@ class DownloaderService : Service() {
         val storagePath = job.getString("storage_path")
         val title = job.optString("title", "video")
         try {
-            setStatus("Downloading: $title")
-            val audio = downloadAudio(videoUrl, noteId)
+            setStatus("Downloading “$title” 0%")
+            val audio = downloadAudio(videoUrl, noteId, title)
             // Supabase's free tier rejects uploads over 50 MB. Compressed 16 kHz mono audio only
             // crosses that around ~4.5 h of speech; if it still does, fail clearly instead of
             // uploading a doomed file and looping.
@@ -161,23 +161,38 @@ class DownloaderService : Service() {
         }
     }
 
-    private fun downloadAudio(videoUrl: String, noteId: String): File {
+    private fun downloadAudio(videoUrl: String, noteId: String, title: String): File {
         val dir = File(cacheDir, "dl-$noteId").apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
         request.addOption("-f", "bestaudio/best")
+        // Pick the SMALLEST audio stream YouTube offers (~48 kbps) instead of the default best
+        // (~130 kbps). Speech ASR at 16 kHz mono needs nothing more, so this cuts the download by
+        // ~2-3× (a 1.5 h podcast: ~32 MB vs ~88 MB) — the main mobile-data saver. `--max-filesize`
+        // is a runaway guard so a pathological stream can't silently devour data.
+        request.addOption("--format-sort", "+abr,+size")
+        request.addOption("--max-filesize", "150M")
         request.addOption("--no-playlist")
         request.addOption("--retries", "5")
         // Transcode to compact 16 kHz mono AAC (bundled ffmpeg) BEFORE upload. The ASR side
-        // downsamples to 16 kHz mono anyway, so this loses no transcription quality, but it turns
-        // an ~85 MB bestaudio into ~14 MB/hour — under Supabase's 50 MB free-plan upload cap (which
-        // silently rejects large files with a 413 and forces an endless re-download) and far less
-        // mobile data to upload. AAC (m4a), not Opus: ffmpeg's Opus encoder is experimental/often
-        // missing from mobile builds, so an Opus re-encode fails on-device and kills the download.
+        // downsamples to 16 kHz mono anyway, so this loses no transcription quality, but it keeps
+        // the file under Supabase's 50 MB free-plan upload cap (a 413 there forces an endless
+        // re-download) and cuts upload data too. AAC (m4a), not Opus: ffmpeg's Opus encoder is
+        // experimental/often missing from mobile builds, so an Opus re-encode fails and kills it.
         request.addOption("-x")
         request.addOption("--audio-format", "m4a")
         request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -b:a 32k")
         request.addOption("-o", File(dir, "audio.%(ext)s").absolutePath)
-        YoutubeDL.getInstance().execute(request) { _, _, _ -> }
+
+        // Surface real progress so a slow download never looks frozen. yt-dlp reports the download
+        // percent; once it hits 100 % the AAC transcode runs (no further %), so show "Converting…".
+        var lastShown = -1
+        YoutubeDL.getInstance().execute(request) { progress, _, _ ->
+            val pct = progress.toInt()
+            if (pct in 0..100 && pct != lastShown) {
+                lastShown = pct
+                setStatus(if (pct >= 100) "Converting “$title”…" else "Downloading “$title” $pct%")
+            }
+        }
         return dir.listFiles()?.firstOrNull { it.name.startsWith("audio.") }
             ?: throw IllegalStateException("yt-dlp produced no audio file")
     }
