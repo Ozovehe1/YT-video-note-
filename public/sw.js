@@ -9,7 +9,7 @@
  *  - YouTube thumbnails: best-effort cache-first (opaque).
  *  - Everything else (Supabase / Modal / API mutations): untouched — straight to the network.
  */
-const VERSION = "v2";
+const VERSION = "v3";
 const STATIC_CACHE = `verbatim-static-${VERSION}`;
 const PAGE_CACHE = `verbatim-pages-${VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -59,6 +59,16 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   const sameOrigin = url.origin === self.location.origin;
 
+  // CROSS-ORIGIN: never intercept — let it hit the network natively. Intercepting + caching an
+  // opaque cross-origin response consumes its stream and BREAKS downloads (the GitHub APK reached
+  // full size but never finalized). Only exception: YouTube thumbnail hosts, cached best-effort.
+  if (!sameOrigin) {
+    if (url.hostname.endsWith("ytimg.com") || url.hostname.endsWith("youtube.com")) {
+      event.respondWith(cacheFirst(request, STATIC_CACHE));
+    }
+    return;
+  }
+
   // Page navigations → network-first; offline, fall back to the exact cached page, then a
   // cached shell of the SAME route (the client pages read the id from the URL, so any cached
   // /read/* shell renders any note from the local store), then the offline page.
@@ -100,11 +110,5 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // YouTube thumbnails → best-effort cache-first (keeps library covers offline).
-  if (url.hostname.endsWith("ytimg.com") || url.hostname.endsWith("youtube.com")) {
-    event.respondWith(cacheFirst(request, STATIC_CACHE));
-    return;
-  }
-
-  // Everything else (Supabase, Modal, API) → default network handling (not intercepted).
+  // Everything else same-origin (Supabase is cross-origin so already skipped) → default network.
 });
