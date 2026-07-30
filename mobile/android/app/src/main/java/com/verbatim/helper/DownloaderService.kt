@@ -151,12 +151,13 @@ class DownloaderService : Service() {
             markUploaded(base, token, noteId, storagePath)
             setStatus("Handed off: $title")
         } catch (e: Exception) {
-            // Keep the real reason in the logs + server (for debugging), but keep the
-            // user-facing status clean — no raw errors on screen.
+            // Surface the ACTUAL reason (the notification is expandable) so a failure is diagnosable
+            // instead of a generic "couldn't fetch" — e.g. "upload failed: 413", a yt-dlp/ffmpeg
+            // error, or "produced no audio file". Also logged and reported to the server.
             Log.e(VerbatimApp.TAG, "job $noteId failed", e)
             val reason = (e.message ?: e.javaClass.simpleName).replace("\n", " ").trim()
             reportError(base, token, noteId, reason)
-            setStatus("Couldn't fetch that one — will retry")
+            setStatus("Couldn't finish “$title”: ${reason.take(180)}")
         }
     }
 
@@ -166,14 +167,15 @@ class DownloaderService : Service() {
         request.addOption("-f", "bestaudio/best")
         request.addOption("--no-playlist")
         request.addOption("--retries", "5")
-        // Transcode to compact 16 kHz mono Opus (bundled ffmpeg) BEFORE upload. The ASR side
+        // Transcode to compact 16 kHz mono AAC (bundled ffmpeg) BEFORE upload. The ASR side
         // downsamples to 16 kHz mono anyway, so this loses no transcription quality, but it turns
-        // an ~85 MB bestaudio into ~10 MB/hour — under Supabase's 50 MB free-plan upload cap (which
-        // was silently rejecting large files and forcing an endless re-download) and far less
-        // mobile data to upload.
+        // an ~85 MB bestaudio into ~14 MB/hour — under Supabase's 50 MB free-plan upload cap (which
+        // silently rejects large files with a 413 and forces an endless re-download) and far less
+        // mobile data to upload. AAC (m4a), not Opus: ffmpeg's Opus encoder is experimental/often
+        // missing from mobile builds, so an Opus re-encode fails on-device and kills the download.
         request.addOption("-x")
-        request.addOption("--audio-format", "opus")
-        request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -b:a 24k")
+        request.addOption("--audio-format", "m4a")
+        request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -b:a 32k")
         request.addOption("-o", File(dir, "audio.%(ext)s").absolutePath)
         YoutubeDL.getInstance().execute(request) { _, _, _ -> }
         return dir.listFiles()?.firstOrNull { it.name.startsWith("audio.") }
