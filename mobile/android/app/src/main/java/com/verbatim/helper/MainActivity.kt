@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.webkit.JavascriptInterface
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -53,6 +54,20 @@ class MainActivity : AppCompatActivity() {
         b.toggleButton.setOnClickListener {
             if (running) stop() else b.webView.loadUrl("${Prefs.BASE_URL}/settings")
         }
+
+        // Back button navigates the web view's history instead of closing the app, so you're
+        // never stuck on a page (e.g. after opening a link). Only exits when there's no page
+        // to go back to.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (b.webView.canGoBack()) {
+                    b.webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 
     override fun onResume() {
