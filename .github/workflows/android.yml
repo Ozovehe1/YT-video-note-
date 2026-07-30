@@ -10,6 +10,10 @@ on:
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
+# Needed so the workflow can publish a Release with the APK attached.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,9 +43,26 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/verbatim.apk"
+
+      - name: Upload APK (build artifact)
         uses: actions/upload-artifact@v4
         with:
           name: verbatim-debug-apk
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Publish the APK to a fixed "android-latest" Release so it's a permanent,
+      # one-tap download that doesn't expire (unlike build artifacts). The tag is
+      # reused every build, so the download link stays the same.
+      - name: Publish APK to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Verbatim phone helper (latest)
+          body: |
+            Latest Verbatim phone-helper APK (arm64-v8a, debug-signed).
+            Tap `verbatim.apk` below to download, then sideload it.
+          files: verbatim.apk
+          fail_on_unmatched_files: true
