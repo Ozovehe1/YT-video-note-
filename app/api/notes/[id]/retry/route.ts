@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, getAudioPath, setAudioPath } from "@/lib/asr-kickoff";
 
 /**
  * Retry a note that errored or looks stuck. If its audio is still in Storage (`audio_path`),
@@ -18,7 +18,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   const { data: note } = await supabase
     .from("notes")
-    .select("status, audio_path")
+    .select("status")
     .eq("id", id)
     .single();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
@@ -26,11 +26,12 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   const admin = createAdminClient();
 
-  // Reuse the already-uploaded audio if it's still there.
-  if (note.audio_path) {
+  // Reuse the already-uploaded audio if it's still there (null if the column isn't there yet).
+  const audioPath = await getAudioPath(admin, id);
+  if (audioPath) {
     const ok = await kickModalAsr(admin, {
       noteId: id,
-      audioPath: note.audio_path,
+      audioPath,
       origin: originFrom(request),
     });
     if (ok) {
@@ -45,8 +46,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   await admin
     .from("notes")
-    .update({ status: "awaiting_audio", error_message: null, audio_path: null })
+    .update({ status: "awaiting_audio", error_message: null })
     .eq("id", id)
     .eq("user_id", user.id);
+  await setAudioPath(admin, id, null); // best-effort clear so the phone re-fetches fresh
   return NextResponse.json({ status: "awaiting_audio" });
 }

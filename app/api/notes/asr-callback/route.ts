@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
-import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, getAudioPath, setAudioPath } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, user_id, title, channel, error_message, audio_path")
+    .select("id, user_id, title, channel, error_message")
     .eq("id", noteId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
@@ -46,11 +46,12 @@ export async function POST(request: Request) {
   if (body.status === "error") {
     const prior = Number(/^asr_retry:(\d+)$/.exec(note.error_message ?? "")?.[1] ?? 0);
     const attempts = prior + 1;
+    const audioPath = await getAudioPath(admin, noteId);
     let requeued = false;
-    if (attempts < MAX_ASR_ATTEMPTS && note.audio_path) {
+    if (attempts < MAX_ASR_ATTEMPTS && audioPath) {
       const ok = await kickModalAsr(admin, {
         noteId,
-        audioPath: note.audio_path,
+        audioPath,
         origin: originFrom(request),
       });
       if (ok) {
@@ -104,7 +105,9 @@ export async function POST(request: Request) {
     }
   }
 
-  // The note is finished the moment the sections are in — nothing else to generate.
+  // The note is finished the moment the sections are in — nothing else to generate. This update
+  // deliberately does NOT touch audio_path, so a note always reaches `ready` even if that column
+  // doesn't exist yet (migration 0004 not run).
   await admin
     .from("notes")
     .update({
@@ -116,7 +119,6 @@ export async function POST(request: Request) {
       transcript: null,
       status: "ready",
       error_message: null,
-      audio_path: null,
     })
     .eq("id", noteId);
 
@@ -125,15 +127,17 @@ export async function POST(request: Request) {
   // exact reused file recorded on the note (which may carry a different note's id prefix).
   // Best-effort: never fail the callback if cleanup hiccups.
   try {
+    const reused = await getAudioPath(admin, noteId);
     const { data: files } = await admin.storage
       .from("audio")
       .list(note.user_id, { search: `${noteId}-` });
     const paths = new Set((files ?? []).map((f) => `${note.user_id}/${f.name}`));
-    if (note.audio_path) paths.add(note.audio_path);
+    if (reused) paths.add(reused);
     if (paths.size) await admin.storage.from("audio").remove([...paths]);
   } catch {
     /* leave the file; it can be cleaned up later */
   }
+  await setAudioPath(admin, noteId, null); // best-effort; no-ops if the column is absent
 
   return NextResponse.json({ ok: true, sections: rows.length });
 }

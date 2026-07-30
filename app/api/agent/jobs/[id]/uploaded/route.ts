@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateAgent } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, setAudioPath } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -39,12 +39,14 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
 
-  // Record the uploaded file first — this is what makes every later retry data-free.
+  // Mark it transcribing, and separately record the uploaded file (best-effort — the audio_path
+  // write no-ops if that column isn't there yet, without blocking transcription).
   await admin
     .from("notes")
-    .update({ status: "transcribing", audio_path: storagePath, error_message: null })
+    .update({ status: "transcribing", error_message: null })
     .eq("id", id)
     .eq("user_id", userId);
+  await setAudioPath(admin, id, storagePath);
 
   const ok = await kickModalAsr(admin, { noteId: id, audioPath: storagePath, origin: originFrom(request) });
   if (!ok) {

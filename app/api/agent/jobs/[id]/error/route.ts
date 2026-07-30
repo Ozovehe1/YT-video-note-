@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateAgent } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, getAudioPath } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -29,17 +29,19 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, error_message, audio_path")
+    .select("id, error_message")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
 
-  // Audio already in Storage → reuse it; the phone must not re-download.
-  if (note.audio_path) {
+  // Audio already in Storage → reuse it; the phone must not re-download. (null if the column
+  // isn't there yet, so we fall through to the normal re-download path.)
+  const audioPath = await getAudioPath(admin, id);
+  if (audioPath) {
     const ok = await kickModalAsr(admin, {
       noteId: id,
-      audioPath: note.audio_path,
+      audioPath,
       origin: originFrom(request),
     });
     await admin

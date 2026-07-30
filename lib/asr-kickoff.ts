@@ -95,6 +95,34 @@ export async function kickModalAsr(
   return false;
 }
 
+/**
+ * Read a note's stored audio path, returning null on ANY error — including the `audio_path` column
+ * not existing yet (migration 0004 not run). Keeping this separate from the note's status reads/writes
+ * means the core pipeline (claim → transcribe → ready) never breaks just because reuse isn't set up.
+ */
+export async function getAudioPath(admin: Admin, noteId: string): Promise<string | null> {
+  try {
+    const { data, error } = await admin
+      .from("notes")
+      .select("audio_path")
+      .eq("id", noteId)
+      .maybeSingle();
+    if (error) return null;
+    return (data as { audio_path?: string | null } | null)?.audio_path ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort write of a note's audio_path; silently no-ops if the column doesn't exist. */
+export async function setAudioPath(admin: Admin, noteId: string, value: string | null): Promise<void> {
+  try {
+    await admin.from("notes").update({ audio_path: value }).eq("id", noteId);
+  } catch {
+    /* column may not exist yet — reuse just stays off until migration 0004 runs */
+  }
+}
+
 /** Build the app's own origin (proto + host) from an incoming request's forwarded headers. */
 export function originFrom(request: Request): string {
   const h = request.headers;
