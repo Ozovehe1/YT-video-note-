@@ -137,6 +137,22 @@ export function Reader({
   const partsDone = note.chunk_cursor ?? 0;
   const genPercent = parts > 0 ? Math.min(96, Math.round((partsDone / parts) * 100)) : 0;
 
+  // The Monologue/Dialogue classification is only known once transcription + diarization finishes
+  // (the ASR callback sets note.video_type). Until then, don't assert a speaker layout — show the
+  // current status instead, so a still-processing note isn't mislabeled "Monologue".
+  const eyebrow =
+    note.video_type === "dialogue"
+      ? `Dialogue · ${note.speakers.join(", ") || "speakers"}`
+      : note.video_type === "monologue"
+        ? "Monologue"
+        : note.status === "awaiting_audio"
+          ? "Awaiting audio"
+          : note.status === "transcribing"
+            ? "Transcribing"
+            : processing
+              ? "Writing"
+              : null;
+
   // (The reader page re-polls the note while it's still being produced and passes fresh
   // props here, so this component just reflects whatever `note`/`sections` it's given.)
 
@@ -202,11 +218,11 @@ export function Reader({
         >
           {/* Header */}
           <header className="mb-10 border-b border-hairline pb-8">
-            <p className="font-mono text-[0.7rem] uppercase tracking-[0.14em] text-oxblood">
-              {note.video_type === "dialogue"
-                ? `Dialogue · ${note.speakers.join(", ") || "speakers"}`
-                : "Monologue"}
-            </p>
+            {eyebrow && (
+              <p className="font-mono text-[0.7rem] uppercase tracking-[0.14em] text-oxblood">
+                {eyebrow}
+              </p>
+            )}
             <h1 className="mt-3 font-display text-[2rem] font-semibold leading-tight tracking-tight">
               {note.title}
             </h1>
