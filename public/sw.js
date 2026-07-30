@@ -9,7 +9,7 @@
  *  - YouTube thumbnails: best-effort cache-first (opaque).
  *  - Everything else (Supabase / Modal / API mutations): untouched — straight to the network.
  */
-const VERSION = "v3";
+const VERSION = "v4";
 const STATIC_CACHE = `verbatim-static-${VERSION}`;
 const PAGE_CACHE = `verbatim-pages-${VERSION}`;
 const OFFLINE_URL = "/offline";

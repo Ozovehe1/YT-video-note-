@@ -1,12 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isVerbatimApp } from "@/lib/is-app";
 
 const PROTECTED = ["/library", "/settings", "/read", "/new"];
 
-// These pages are the actual app — they only work INSIDE the Verbatim Android app (which tags
-// its User-Agent with "VerbatimApp"). A normal browser gets the info-only website, so any of
-// these is redirected to the landing. Email-flow routes (/auth/callback, reset/forgot password)
-// are intentionally NOT here — they must open from a link in a browser.
+// These pages are the actual app — they only work INSIDE the Verbatim Android app (detected via
+// isVerbatimApp: the WebView "wv" marker or the "VerbatimApp" tag). A normal browser gets the
+// info-only website, so any of these is redirected to the landing. Email-flow routes
+// (/auth/callback, reset/forgot password) are intentionally NOT here — they must open in a browser.
 const APP_ONLY = ["/library", "/settings", "/read", "/new", "/login", "/signup"];
 
 /** Refreshes the Supabase auth session cookie and gates protected + app-only routes. */
@@ -40,7 +41,7 @@ export async function updateSession(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   // Website is info-only in a browser: send app pages back to the landing unless we're in the app.
-  const isApp = (request.headers.get("user-agent") || "").includes("VerbatimApp");
+  const isApp = isVerbatimApp(request.headers.get("user-agent"));
 
   // Inside the app, "/" is the app home, not the marketing landing. The Verbatim brand logo links
   // to "/", so without this any tap on it would dump the user onto the info-only landing and strand

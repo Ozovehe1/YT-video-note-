@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { Download } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/app/actions/auth";
+import { isVerbatimApp } from "@/lib/is-app";
 import { Brand } from "./brand";
 import { NavAccount } from "./nav-account";
 
@@ -10,9 +11,9 @@ const APK_URL =
   "https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk";
 
 export async function Nav() {
-  // The app tags its User-Agent with "VerbatimApp". A normal browser sees the info-only
+  // Inside the Verbatim app (WebView) we show the full nav; a normal browser sees the info-only
   // website, so its nav is just the brand + a download button (no sign-in / app links).
-  const isApp = ((await headers()).get("user-agent") || "").includes("VerbatimApp");
+  const isApp = isVerbatimApp((await headers()).get("user-agent"));
 
   if (!isApp) {
     return (
