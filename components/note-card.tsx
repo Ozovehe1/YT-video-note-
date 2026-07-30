@@ -76,7 +76,7 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
               <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-panel">
                 <div className="h-full rounded-full bg-oxblood" style={{ width: `${percent}%` }} />
               </div>
-              <span className="font-mono text-[0.65rem] text-muted">{percent}%</span>
+              <span className="whitespace-nowrap font-mono text-[0.65rem] text-muted">{percent}% read</span>
             </div>
           ) : (
             <p className="text-xs text-muted">{relativeTime(note.created_at)}</p>
