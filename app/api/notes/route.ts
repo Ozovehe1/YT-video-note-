@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
+import { findReusableAudio, kickModalAsr, originFrom } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -62,6 +64,33 @@ export async function POST(request: Request) {
 
   if (error || !note) {
     return NextResponse.json({ error: "Could not save the note." }, { status: 500 });
+  }
+
+  // If this user already has this video's audio in Storage (from a previous note/attempt),
+  // reuse it — transcribe straight away instead of making the phone re-download the video.
+  try {
+    const admin = createAdminClient();
+    const reusable = await findReusableAudio(admin, { userId: user.id, videoId });
+    if (reusable) {
+      await admin
+        .from("notes")
+        .update({ status: "transcribing", audio_path: reusable, error_message: null })
+        .eq("id", note.id);
+      // Fire off ASR from the existing file; if it can't start, fall back to the phone path.
+      const ok = await kickModalAsr(admin, {
+        noteId: note.id,
+        audioPath: reusable,
+        origin: originFrom(request),
+      });
+      if (!ok) {
+        await admin
+          .from("notes")
+          .update({ status: "awaiting_audio" })
+          .eq("id", note.id);
+      }
+    }
+  } catch {
+    /* reuse is best-effort — on any hiccup the note stays awaiting_audio for the phone */
   }
 
   // Make sure the new note appears right away wherever notes are listed.

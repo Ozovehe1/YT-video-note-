@@ -45,6 +45,12 @@ image = (
 
 app = modal.App("verbatim-asr")
 
+# The trigger endpoint below only checks the secret and spawns the GPU job, so it runs on a tiny
+# CPU image that cold-starts in ~1-2s. Pinning it to the heavy CUDA `image` (as it used to be)
+# meant a cold call had to pull/boot multi-GB of torch+MOSS before answering the HTTP request —
+# long enough that the app timed out and misread the (actually-fine) kickoff as a failure.
+trigger_image = modal.Image.debian_slim(python_version="3.12").pip_install("fastapi[standard]")
+
 
 @app.cls(
     gpu="L4",
@@ -151,7 +157,7 @@ class Pipeline:
             raise
 
 
-@app.function(image=image, secrets=[modal.Secret.from_name("tailscale")])
+@app.function(image=trigger_image, secrets=[modal.Secret.from_name("tailscale")])
 @modal.fastapi_endpoint(method="POST")
 def transcribe(payload: dict):
     # Cheap trigger the app calls with a signed audio URL. Spawns the GPU job, returns fast.

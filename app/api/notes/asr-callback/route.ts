@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
+import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -34,26 +35,36 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, user_id, title, channel, error_message")
+    .select("id, user_id, title, channel, error_message, audio_path")
     .eq("id", noteId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
 
-  // Failure from Modal (download or ASR failed): bounded retry, then a clear error.
+  // ASR failed inside Modal. If the audio is still in Storage, re-run ASR on that same file —
+  // bounded — with no phone involvement (never re-download). Give up with a clear error after
+  // MAX_ASR_ATTEMPTS or when there's no audio to reuse.
   if (body.status === "error") {
     const prior = Number(/^asr_retry:(\d+)$/.exec(note.error_message ?? "")?.[1] ?? 0);
     const attempts = prior + 1;
-    if (attempts >= MAX_ASR_ATTEMPTS) {
+    let requeued = false;
+    if (attempts < MAX_ASR_ATTEMPTS && note.audio_path) {
+      const ok = await kickModalAsr(admin, {
+        noteId,
+        audioPath: note.audio_path,
+        origin: originFrom(request),
+      });
+      if (ok) {
+        await admin
+          .from("notes")
+          .update({ status: "transcribing", error_message: `asr_retry:${attempts}` })
+          .eq("id", noteId);
+        requeued = true;
+      }
+    }
+    if (!requeued) {
       await admin
         .from("notes")
-        .update({ status: "error", error_message: "We couldn't get this video's audio. Please try again." })
-        .eq("id", noteId);
-    } else {
-      // Re-kick: requeue by re-calling Modal happens on the next status poll / retry route;
-      // here we just record the attempt and leave it transcribing for a manual/auto retry.
-      await admin
-        .from("notes")
-        .update({ status: "error", error_message: `asr_retry:${attempts}` })
+        .update({ status: "error", error_message: "We couldn't transcribe this video's audio. Please try again." })
         .eq("id", noteId);
     }
     return NextResponse.json({ ok: true });
@@ -105,18 +116,21 @@ export async function POST(request: Request) {
       transcript: null,
       status: "ready",
       error_message: null,
+      audio_path: null,
     })
     .eq("id", noteId);
 
   // The audio was only needed for this one ASR pass — delete it from Storage so files don't
-  // pile up against the free quota. Matches every attempt's file (`<noteId>-<uuid>.audio`).
+  // pile up against the free quota. Removes both this note's own files (`<noteId>-…`) and the
+  // exact reused file recorded on the note (which may carry a different note's id prefix).
   // Best-effort: never fail the callback if cleanup hiccups.
   try {
     const { data: files } = await admin.storage
       .from("audio")
       .list(note.user_id, { search: `${noteId}-` });
-    const paths = (files ?? []).map((f) => `${note.user_id}/${f.name}`);
-    if (paths.length) await admin.storage.from("audio").remove(paths);
+    const paths = new Set((files ?? []).map((f) => `${note.user_id}/${f.name}`));
+    if (note.audio_path) paths.add(note.audio_path);
+    if (paths.size) await admin.storage.from("audio").remove([...paths]);
   } catch {
     /* leave the file; it can be cleaned up later */
   }

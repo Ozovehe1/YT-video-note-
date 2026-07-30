@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { authenticateAgent } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { kickModalAsr, originFrom } from "@/lib/asr-kickoff";
 
-export const maxDuration = 30;
-
-const AUDIO_BUCKET = "audio";
+export const maxDuration = 60;
 
 /**
- * The phone helper posts here once it has uploaded a note's audio. We sign a short-lived
- * READ URL for the uploaded file and hand it to the Modal ASR endpoint, which transcribes
- * it and calls /api/notes/asr-callback back. The helper never holds the Modal secret.
+ * The phone helper posts here once it has uploaded a note's audio. We record where the file
+ * lives (so any retry reuses it instead of re-downloading), then kick off Modal ASR from it.
+ *
+ * Crucially, once the audio is in Storage the phone's job is DONE: we always return ok so the
+ * helper never treats a downstream (Modal) hiccup as a failure and re-downloads the whole
+ * video. If ASR can't start, the note is left in a retryable state that reuses the same file.
  */
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const userId = await authenticateAgent(request);
@@ -37,41 +39,22 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
 
-  const endpoint = process.env.MODAL_TRANSCRIBE_URL;
-  const secret = process.env.ASR_WEBHOOK_SECRET;
-  if (!endpoint || !secret) {
-    return NextResponse.json({ error: "Transcription endpoint not configured." }, { status: 500 });
-  }
+  // Record the uploaded file first — this is what makes every later retry data-free.
+  await admin
+    .from("notes")
+    .update({ status: "transcribing", audio_path: storagePath, error_message: null })
+    .eq("id", id)
+    .eq("user_id", userId);
 
-  const { data: signed, error: sErr } = await admin.storage
-    .from(AUDIO_BUCKET)
-    .createSignedUrl(storagePath, 60 * 60);
-  if (sErr || !signed?.signedUrl) {
+  const ok = await kickModalAsr(admin, { noteId: id, audioPath: storagePath, origin: originFrom(request) });
+  if (!ok) {
+    // Audio is safely uploaded; only the ASR kickoff failed. Mark it retryable (the retry reuses
+    // this same file — no re-download) but still tell the phone "ok" so it doesn't re-fetch.
     await admin
       .from("notes")
-      .update({ status: "error", error_message: "Couldn't read the uploaded audio." })
+      .update({ status: "error", error_message: "Transcription didn’t start — tap retry." })
       .eq("id", id)
       .eq("user_id", userId);
-    return NextResponse.json({ error: "Could not sign audio URL." }, { status: 502 });
-  }
-
-  const hdrs = request.headers;
-  const host = hdrs.get("x-forwarded-host") ?? hdrs.get("host");
-  const proto = hdrs.get("x-forwarded-proto") ?? "https";
-  const callbackUrl = `${proto}://${host}/api/notes/asr-callback`;
-
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      audio_url: signed.signedUrl,
-      note_id: id,
-      callback_url: callbackUrl,
-      secret,
-    }),
-  });
-  if (!res.ok) {
-    return NextResponse.json({ error: `Modal returned ${res.status}` }, { status: 502 });
   }
   return NextResponse.json({ ok: true });
 }
