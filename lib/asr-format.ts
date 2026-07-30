@@ -89,17 +89,8 @@ export function buildSections(segments: AsrSegment[]): {
   labels.forEach((l, i) => nameOf.set(l, `Speaker ${i + 1}`));
   const speakers = labels.map((l) => nameOf.get(l)!);
 
-  // Merge consecutive same-speaker segments into blocks (one paragraph per turn).
-  type Blk = { speaker: string; start: number; text: string };
-  const blocks: Blk[] = [];
-  for (const s of segments) {
-    const speaker = nameOf.get(s.speaker) ?? s.speaker;
-    const last = blocks[blocks.length - 1];
-    if (last && last.speaker === speaker) last.text = `${last.text} ${s.text}`.trim();
-    else blocks.push({ speaker, start: s.start, text: s.text });
-  }
-
-  // Group blocks into ~5-minute sections.
+  // One paragraph per MOSS segment — its own timestamp + speaker (follows MOSS's structure;
+  // no merging, so per-paragraph timing is preserved). Group into ~5-minute sections.
   const sections: BuiltSection[] = [];
   let curStart = -1;
   let cur: NoteBlock[] = [];
@@ -112,15 +103,20 @@ export function buildSections(segments: AsrSegment[]): {
     });
     cur = [];
   };
-  for (const b of blocks) {
-    if (curStart < 0) curStart = b.start;
-    if (b.start - curStart >= SECTION_SECONDS) {
-      flush(b.start);
-      curStart = b.start;
+  for (const s of segments) {
+    if (curStart < 0) curStart = s.start;
+    if (s.start - curStart >= SECTION_SECONDS) {
+      flush(s.start);
+      curStart = s.start;
     }
-    cur.push({ type: "paragraph", speaker: b.speaker, timestamp: ts(b.start), text: b.text });
+    cur.push({
+      type: "paragraph",
+      speaker: nameOf.get(s.speaker) ?? s.speaker,
+      timestamp: ts(s.start),
+      text: s.text,
+    });
   }
-  flush(blocks.length ? blocks[blocks.length - 1].start : 0);
+  flush(segments.length ? segments[segments.length - 1].start : 0);
 
   return { sections, speakers, videoType: labels.length >= 2 ? "dialogue" : "monologue" };
 }

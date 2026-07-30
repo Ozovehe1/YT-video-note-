@@ -18,9 +18,11 @@ import urllib.request
 import modal
 
 MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-# High cap so a full-length video transcribes end-to-end (MOSS has a 128k context). Override
-# with the MOSS_MAX_NEW_TOKENS env var on the Modal secret — no redeploy needed to change it.
-MAX_NEW_TOKENS = int(os.environ.get("MOSS_MAX_NEW_TOKENS", "32768"))
+# MOSS does single-pass transcription up to ~90 min of audio (128k context). We split longer
+# audio into CHUNK_SECONDS pieces and transcribe each in one pass, so any length works — a 5h
+# video is ~4 passes. Token cap is per-chunk and generous enough to cover a full chunk verbatim.
+CHUNK_SECONDS = 4800  # 80 min — near MOSS's single-pass max, with a small safety margin
+MAX_NEW_TOKENS = 50000  # per-chunk ceiling (generation stops at end-of-speech well before this)
 
 
 def _download_model():
@@ -48,7 +50,7 @@ app = modal.App("verbatim-asr")
     gpu="L4",
     image=image,
     secrets=[modal.Secret.from_name("tailscale")],
-    timeout=3600,
+    timeout=14400,  # up to 4h wall-clock: a 5h video is ~4 chunks transcribed in sequence
     scaledown_window=120,
 )
 class Pipeline:
@@ -68,23 +70,29 @@ class Pipeline:
         )
         self.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-    def _fetch_audio(self, audio_url: str, out_dir: str) -> str:
-        # Download the signed audio URL, then normalize to 16 kHz mono wav for MOSS.
+    def _fetch_and_split(self, audio_url: str, out_dir: str):
+        # Download the signed audio URL, then convert to 16 kHz mono wav AND split into
+        # CHUNK_SECONDS pieces in one ffmpeg pass. Returns [(chunk_path, offset_seconds)] so
+        # any length works — MOSS transcribes each chunk in a single pass.
         raw = os.path.join(out_dir, "in")
         req = urllib.request.Request(audio_url, headers={"User-Agent": "verbatim-asr"})
-        with urllib.request.urlopen(req, timeout=300) as r, open(raw, "wb") as f:
+        with urllib.request.urlopen(req, timeout=1800) as r, open(raw, "wb") as f:
             while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
+                buf = r.read(1 << 20)
+                if not buf:
                     break
-                f.write(chunk)
-        wav = os.path.join(out_dir, "audio.wav")
+                f.write(buf)
+        pattern = os.path.join(out_dir, "chunk_%04d.wav")
         subprocess.run(
-            ["ffmpeg", "-y", "-i", raw, "-ar", "16000", "-ac", "1", wav],
+            ["ffmpeg", "-y", "-i", raw, "-ar", "16000", "-ac", "1",
+             "-f", "segment", "-segment_time", str(CHUNK_SECONDS), pattern],
             check=True,
             capture_output=True,
         )
-        return wav
+        names = sorted(n for n in os.listdir(out_dir) if n.startswith("chunk_") and n.endswith(".wav"))
+        if not names:
+            raise RuntimeError("ffmpeg produced no audio chunks")
+        return [(os.path.join(out_dir, n), i * CHUNK_SECONDS) for i, n in enumerate(names)]
 
     def _transcribe(self, audio_path: str):
         from moss_transcribe_diarize import parse_transcript
@@ -122,11 +130,16 @@ class Pipeline:
 
     @modal.method()
     def run_job(self, audio_url: str, note_id: str, callback_url: str):
-        # Fetch the uploaded audio, diarize, POST the result back.
+        # Fetch + split the audio, diarize each chunk, stitch with absolute timestamps, POST back.
         try:
+            segments = []
             with tempfile.TemporaryDirectory() as tmp:
-                audio = self._fetch_audio(audio_url, tmp)
-                segments = self._transcribe(audio)
+                for path, offset in self._fetch_and_split(audio_url, tmp):
+                    for s in self._transcribe(path):
+                        s["start"] = (s["start"] or 0.0) + offset
+                        if s.get("end") is not None:
+                            s["end"] = s["end"] + offset
+                        segments.append(s)
             if not segments:
                 raise RuntimeError("No speech found in the audio")
             self._post_back(callback_url, {"note_id": note_id, "status": "done", "segments": segments})
