@@ -137,6 +137,14 @@ class DownloaderService : Service() {
         try {
             setStatus("Downloading: $title")
             val audio = downloadAudio(videoUrl, noteId)
+            // Supabase's free tier rejects uploads over 50 MB. Compressed 16 kHz mono audio only
+            // crosses that around ~4.5 h of speech; if it still does, fail clearly instead of
+            // uploading a doomed file and looping.
+            if (audio.length() > 49L * 1024 * 1024) {
+                val mb = audio.length() / (1024 * 1024)
+                audio.delete()
+                throw IllegalStateException("Audio is ${mb}MB after compression — too long for the 50 MB storage limit")
+            }
             setStatus("Uploading: $title (${audio.length() / 1024} KB)")
             upload(uploadUrl, audio)
             audio.delete()
@@ -158,6 +166,14 @@ class DownloaderService : Service() {
         request.addOption("-f", "bestaudio/best")
         request.addOption("--no-playlist")
         request.addOption("--retries", "5")
+        // Transcode to compact 16 kHz mono Opus (bundled ffmpeg) BEFORE upload. The ASR side
+        // downsamples to 16 kHz mono anyway, so this loses no transcription quality, but it turns
+        // an ~85 MB bestaudio into ~10 MB/hour — under Supabase's 50 MB free-plan upload cap (which
+        // was silently rejecting large files and forcing an endless re-download) and far less
+        // mobile data to upload.
+        request.addOption("-x")
+        request.addOption("--audio-format", "opus")
+        request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -b:a 24k")
         request.addOption("-o", File(dir, "audio.%(ext)s").absolutePath)
         YoutubeDL.getInstance().execute(request) { _, _, _ -> }
         return dir.listFiles()?.firstOrNull { it.name.startsWith("audio.") }
