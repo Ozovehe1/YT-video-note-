@@ -18,7 +18,9 @@ import urllib.request
 import modal
 
 MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-MAX_NEW_TOKENS = int(os.environ.get("MOSS_MAX_NEW_TOKENS", "8192"))
+# High cap so a full-length video transcribes end-to-end (MOSS has a 128k context). Override
+# with the MOSS_MAX_NEW_TOKENS env var on the Modal secret — no redeploy needed to change it.
+MAX_NEW_TOKENS = int(os.environ.get("MOSS_MAX_NEW_TOKENS", "32768"))
 
 
 def _download_model():

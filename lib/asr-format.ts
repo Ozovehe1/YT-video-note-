@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { formatDuration } from "@/lib/utils";
+import type { NoteBlock, VideoType } from "@/lib/types";
 
 /** Verify the Modal webhook's HMAC-SHA256 signature over the raw request body. */
 export function verifyAsrSignature(rawBody: string, signature: string | null, secret: string): boolean {
@@ -60,4 +61,66 @@ export function distinctSpeakers(segments: AsrSegment[]): string[] {
     }
   }
   return out;
+}
+
+export interface BuiltSection {
+  heading: string;
+  timestamp_label: string;
+  content: NoteBlock[];
+}
+
+/** ~5-minute windows keep sections skimmable without any LLM deciding topics. */
+const SECTION_SECONDS = 300;
+
+/**
+ * Structure diarized segments into note sections DETERMINISTICALLY — no LLM. The full
+ * transcript is preserved verbatim: consecutive same-speaker segments merge into one
+ * paragraph, and a new section starts every ~5 minutes. Speaker labels are normalized to
+ * "Speaker 1", "Speaker 2", … in first-appearance order (MOSS's raw S01/S02 never leak out).
+ */
+export function buildSections(segments: AsrSegment[]): {
+  sections: BuiltSection[];
+  speakers: string[];
+  videoType: VideoType;
+} {
+  const ts = (n: number) => formatDuration(n) ?? "0:00"; // inputs are always real seconds
+  const labels = distinctSpeakers(segments);
+  const nameOf = new Map<string, string>();
+  labels.forEach((l, i) => nameOf.set(l, `Speaker ${i + 1}`));
+  const speakers = labels.map((l) => nameOf.get(l)!);
+
+  // Merge consecutive same-speaker segments into blocks (one paragraph per turn).
+  type Blk = { speaker: string; start: number; text: string };
+  const blocks: Blk[] = [];
+  for (const s of segments) {
+    const speaker = nameOf.get(s.speaker) ?? s.speaker;
+    const last = blocks[blocks.length - 1];
+    if (last && last.speaker === speaker) last.text = `${last.text} ${s.text}`.trim();
+    else blocks.push({ speaker, start: s.start, text: s.text });
+  }
+
+  // Group blocks into ~5-minute sections.
+  const sections: BuiltSection[] = [];
+  let curStart = -1;
+  let cur: NoteBlock[] = [];
+  const flush = (end: number) => {
+    if (!cur.length) return;
+    sections.push({
+      heading: `${ts(curStart)} – ${ts(end)}`,
+      timestamp_label: ts(curStart),
+      content: cur,
+    });
+    cur = [];
+  };
+  for (const b of blocks) {
+    if (curStart < 0) curStart = b.start;
+    if (b.start - curStart >= SECTION_SECONDS) {
+      flush(b.start);
+      curStart = b.start;
+    }
+    cur.push({ type: "paragraph", speaker: b.speaker, timestamp: ts(b.start), text: b.text });
+  }
+  flush(blocks.length ? blocks[blocks.length - 1].start : 0);
+
+  return { sections, speakers, videoType: labels.length >= 2 ? "dialogue" : "monologue" };
 }

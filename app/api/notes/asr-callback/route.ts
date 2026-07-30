@@ -1,13 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import {
-  parseSegments,
-  segmentsToTranscript,
-  distinctSpeakers,
-  verifyAsrSignature,
-} from "@/lib/asr-format";
-import { chunkTranscript } from "@/lib/chunk";
-import { resolveSpeakers } from "@/lib/llm";
+import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
 
 export const maxDuration = 60;
 
@@ -75,39 +68,45 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No usable segments." }, { status: 422 });
   }
 
-  let transcript = segmentsToTranscript(segments);
-  const labels = distinctSpeakers(segments);
-  let videoType: "monologue" | "dialogue" = labels.length >= 2 ? "dialogue" : "monologue";
-  let speakers: string[] = labels;
-  try {
-    const resolved = await resolveSpeakers({
-      title: note.title,
-      channel: note.channel,
-      transcript,
-      labels,
-    });
-    videoType = resolved.video_type;
-    if (resolved.speakers.length) speakers = resolved.speakers;
-    for (const [label, name] of Object.entries(resolved.labelMap)) {
-      transcript = transcript.split(`[SPEAKER: ${label}]`).join(`[SPEAKER: ${name}]`);
+  // Deterministically structure the FULL transcript into note sections — no LLM. Every word
+  // is preserved; speakers are labeled "Speaker 1/2/…".
+  const { sections, speakers, videoType } = buildSections(segments);
+
+  // Idempotent (in case the callback is retried): clear any prior sections first.
+  await admin.from("note_sections").delete().eq("note_id", noteId);
+
+  const rows = sections.map((s, i) => ({
+    note_id: noteId,
+    order_index: i,
+    heading: s.heading,
+    timestamp_label: s.timestamp_label,
+    content: s.content,
+  }));
+  if (rows.length) {
+    const { error: insErr } = await admin.from("note_sections").insert(rows);
+    if (insErr) {
+      await admin
+        .from("notes")
+        .update({ status: "error", error_message: "Couldn't save the transcript." })
+        .eq("id", noteId);
+      return NextResponse.json({ error: "Insert failed." }, { status: 500 });
     }
-  } catch {
-    /* keep raw labels */
   }
 
-  const chunks = chunkTranscript(transcript);
+  // The note is finished the moment the sections are in — nothing else to generate.
   await admin
     .from("notes")
     .update({
-      transcript,
-      chunk_total: chunks.length,
-      chunk_cursor: 0,
       video_type: videoType,
       speakers,
-      status: "processing",
+      total_sections: rows.length,
+      chunk_cursor: rows.length,
+      chunk_total: rows.length,
+      transcript: null,
+      status: "ready",
       error_message: null,
     })
     .eq("id", noteId);
 
-  return NextResponse.json({ ok: true, chunkTotal: chunks.length });
+  return NextResponse.json({ ok: true, sections: rows.length });
 }
