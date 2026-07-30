@@ -1,6 +1,5 @@
 import Link from "next/link";
-import { Search, FileText, BookOpen, Download } from "lucide-react";
-import { HeroSearch } from "@/components/hero-search";
+import { Search, FileText, BookOpen, Download, Smartphone } from "lucide-react";
 import { Reveal } from "@/components/reveal";
 
 export default function Home() {
@@ -16,15 +15,26 @@ export default function Home() {
             Every video, as something you <em className="italic text-oxblood">read</em>.
           </h1>
           <p className="mt-5 max-w-lg font-read text-lg leading-relaxed text-muted">
-            Search a talk or drop a link. Verbatim writes a faithful, structured note that mirrors
-            the video — word for word, in the order it was said. Read it, theme it, take it anywhere.
+            Verbatim turns any YouTube video into a faithful, speaker-attributed reading note — word
+            for word, in the order it was said. Read it, theme it, take it anywhere, even offline.
           </p>
-          <div className="mt-8 max-w-xl">
-            <HeroSearch />
-            <p className="mt-3 pl-1 text-sm text-muted">
-              Free to start · works with any YouTube video.
-            </p>
+          <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <a
+              href="/download"
+              className="inline-flex items-center gap-2 rounded-xl bg-oxblood px-6 py-3.5 font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
+            >
+              <Download className="h-5 w-5" /> Download for Android
+            </a>
+            <Link
+              href="/login"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-hairline px-5 py-3.5 font-medium text-ink transition-colors hover:bg-panel"
+            >
+              Open the web app <span aria-hidden>→</span>
+            </Link>
           </div>
+          <p className="mt-3 pl-1 text-sm text-muted">
+            Free · Android app · works with any YouTube video.
+          </p>
         </div>
 
         {/* Reader preview card */}
@@ -70,14 +80,14 @@ export default function Home() {
           <Step
             n="02"
             icon={<FileText className="h-5 w-5" />}
-            title="We transcribe"
-            body="The full timestamped transcript is pulled and split so nothing gets summarized away."
+            title="It transcribes"
+            body="The audio is transcribed in full and split so nothing gets summarized away."
           />
           <Step
             n="03"
             icon={<BookOpen className="h-5 w-5" />}
-            title="We write it out"
-            body="Monologue or dialogue is detected, speakers attributed, and a faithful note is written in order."
+            title="Speakers attributed"
+            body="Monologue or dialogue is detected and each point is attributed to who said it, in order."
           />
           <Step
             n="04"
@@ -97,30 +107,38 @@ export default function Home() {
           <div className="space-y-4 font-read text-lg leading-relaxed text-muted">
             <p>
               Most tools compress a video into a few bullet points. Verbatim does the opposite: it
-              rewrites the spoken words into real prose, keeps the video’s exact order, and captures
+              lays out the spoken words as real prose, keeps the video’s exact order, and captures
               every substantive point — definitions, examples, numbers, the back-and-forth of a
               conversation.
             </p>
             <p>
               For interviews and podcasts, it attributes each point to who said it. For talks and
               tutorials, it follows the speaker’s own structure section by section. Longer video,
-              longer read — the page count grows with the runtime.
+              longer read — the page count grows with the runtime. And once you’ve opened a note, it
+              reads offline.
             </p>
           </div>
         </div>
       </section>
 
-      {/* CTA */}
+      {/* Download CTA */}
       <section className="border-t border-hairline py-16 text-center md:py-24">
-        <h2 className="mx-auto max-w-2xl font-display text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
-          Turn your next watch into a read.
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-oxblood/10 text-oxblood">
+          <Smartphone className="h-6 w-6" />
+        </span>
+        <h2 className="mx-auto mt-5 max-w-2xl font-display text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+          Get the app and turn your next watch into a read.
         </h2>
-        <Link
-          href="/signup"
+        <p className="mx-auto mt-3 max-w-md text-muted">
+          The Android app downloads the audio on your phone and reads anywhere — even offline.
+        </p>
+        <a
+          href="/download"
           className="mt-8 inline-flex items-center gap-2 rounded-xl bg-oxblood px-6 py-3.5 font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
         >
-          Get started — it’s free
-        </Link>
+          <Download className="h-5 w-5" /> Download the latest app
+        </a>
+        <p className="mt-3 text-xs text-muted">Android · sideload APK · free.</p>
       </section>
 
       <footer className="border-t border-hairline py-10 text-sm text-muted">
