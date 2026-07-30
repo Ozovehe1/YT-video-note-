@@ -178,9 +178,15 @@ class DownloaderService : Service() {
         // the file under Supabase's 50 MB free-plan upload cap (a 413 there forces an endless
         // re-download) and cuts upload data too. AAC (m4a), not Opus: ffmpeg's Opus encoder is
         // experimental/often missing from mobile builds, so an Opus re-encode fails and kills it.
+        //
+        // Bitrate MUST be set via --audio-quality (yt-dlp's own flag), NOT --postprocessor-args:
+        // the ExtractAudio step overrides a -b:a passed through postprocessor-args with its own
+        // ~78 kbps default (verified: that produced a 59 MB file for a 1.6 h video). --audio-quality
+        // 32K makes it a real 32 kbps → ~14 MB/hour (~22 MB for 1.6 h), safely under the cap.
         request.addOption("-x")
         request.addOption("--audio-format", "m4a")
-        request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -b:a 32k")
+        request.addOption("--audio-quality", "32K")
+        request.addOption("--postprocessor-args", "ffmpeg:-ac 1 -ar 16000")
         request.addOption("-o", File(dir, "audio.%(ext)s").absolutePath)
 
         // Surface real progress so a slow download never looks frozen. yt-dlp reports the download
