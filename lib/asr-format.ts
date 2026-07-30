@@ -38,18 +38,6 @@ export function parseSegments(raw: unknown): AsrSegment[] {
   return out;
 }
 
-/**
- * Turn diarized segments into the transcript string the rest of the app consumes. Each
- * line is `[m:ss] [SPEAKER: <label>] <text>` — the timestamp for jumping, and an explicit
- * speaker tag the note generator copies into the block's speaker field (never into text).
- * Reuses `chunkTranscript` unchanged (it splits on newlines).
- */
-export function segmentsToTranscript(segments: AsrSegment[]): string {
-  return segments
-    .map((s) => `[${formatDuration(s.start)}] [SPEAKER: ${s.speaker}] ${s.text}`)
-    .join("\n");
-}
-
 /** The distinct speaker labels present, in first-appearance order. */
 export function distinctSpeakers(segments: AsrSegment[]): string[] {
   const seen = new Set<string>();
@@ -74,9 +62,10 @@ const SECTION_SECONDS = 300;
 
 /**
  * Structure diarized segments into note sections DETERMINISTICALLY — no LLM. The full
- * transcript is preserved verbatim: consecutive same-speaker segments merge into one
- * paragraph, and a new section starts every ~5 minutes. Speaker labels are normalized to
- * "Speaker 1", "Speaker 2", … in first-appearance order (MOSS's raw S01/S02 never leak out).
+ * transcript is preserved verbatim: one paragraph per segment (keeping MOSS's own
+ * per-paragraph timing and speaker turns), grouped into ~5-minute sections. Speaker labels
+ * are normalized to "Speaker 1", "Speaker 2", … in first-appearance order (MOSS's raw
+ * S01/S02 never leak out).
  */
 export function buildSections(segments: AsrSegment[]): {
   sections: BuiltSection[];

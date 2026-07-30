@@ -9,8 +9,8 @@ const MAX_ASR_ATTEMPTS = 3;
 /**
  * Modal calls this when a transcription job finishes. It's a public endpoint authenticated
  * ONLY by an HMAC-SHA256 signature of the raw body (shared secret ASR_WEBHOOK_SECRET), so it
- * uses the service-role client (no user session). Fast path: format + store the transcript and
- * flip the note to `processing`; the existing generation driver takes over.
+ * uses the service-role client (no user session). It structures the diarized segments into
+ * note sections deterministically (no LLM), marks the note `ready`, and deletes the audio.
  */
 export async function POST(request: Request) {
   const secret = process.env.ASR_WEBHOOK_SECRET;
