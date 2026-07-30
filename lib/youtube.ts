@@ -19,38 +19,49 @@ interface VideoItem {
   contentDetails: { duration: string };
 }
 
-/** Search videos by title. Returns cards with duration filled in from a second call. */
-export async function searchVideos(query: string, max = 8): Promise<SearchResult[]> {
+/**
+ * Search videos by title. Returns a page of cards (duration filled in from a second call) plus
+ * `nextPageToken` for infinite scroll — pass it back to fetch the following page.
+ */
+export async function searchVideos(
+  query: string,
+  max = 24,
+  pageToken?: string,
+): Promise<{ results: SearchResult[]; nextPageToken: string | null }> {
   const searchUrl = new URL(`${API}/search`);
-  searchUrl.search = new URLSearchParams({
+  const params: Record<string, string> = {
     key: key(),
     part: "snippet",
     q: query,
     type: "video",
     maxResults: String(max),
     videoEmbeddable: "true",
-  }).toString();
+  };
+  if (pageToken) params.pageToken = pageToken;
+  searchUrl.search = new URLSearchParams(params).toString();
 
   const res = await fetch(searchUrl, { next: { revalidate: 60 } });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`YouTube search failed (${res.status}): ${body.slice(0, 200)}`);
   }
-  const data = (await res.json()) as { items: SearchItem[] };
+  const data = (await res.json()) as { items: SearchItem[]; nextPageToken?: string };
+  const nextPageToken = data.nextPageToken ?? null;
   const items = data.items?.filter((i) => i.id?.videoId) ?? [];
-  if (items.length === 0) return [];
+  if (items.length === 0) return { results: [], nextPageToken };
 
   // Fetch durations in one batched call.
   const ids = items.map((i) => i.id.videoId).join(",");
   const durations = await fetchDurations(ids);
 
-  return items.map((i) => ({
+  const results = items.map((i) => ({
     video_id: i.id.videoId,
     title: decodeEntities(i.snippet.title),
     channel: i.snippet.channelTitle,
     thumbnail: i.snippet.thumbnails.medium?.url ?? i.snippet.thumbnails.high?.url ?? "",
     duration_label: durations.get(i.id.videoId) ?? null,
   }));
+  return { results, nextPageToken };
 }
 
 async function fetchDurations(ids: string): Promise<Map<string, string>> {

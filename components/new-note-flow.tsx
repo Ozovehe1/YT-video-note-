@@ -14,23 +14,72 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
   const [query, setQuery] = useState(initialQuery);
   const [phase, setPhase] = useState<Phase>("idle");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [nextToken, setNextToken] = useState<string | null>(null);
+  const [activeQuery, setActiveQuery] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const startedRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const runSearch = useCallback(async (q: string) => {
     setError(null);
     setPhase("searching");
+    setActiveQuery(q);
+    setResults([]);
+    setNextToken(null);
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Search failed.");
-      setResults(data.results);
+      setResults(data.results ?? []);
+      setNextToken(data.nextPageToken ?? null);
       setPhase("results");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed.");
       setPhase("error");
     }
   }, []);
+
+  // Infinite scroll: fetch the next page and append (deduped) when the sentinel nears view.
+  const loadMore = useCallback(async () => {
+    if (!nextToken || loadingMore || !activeQuery) return;
+    setLoadingMore(true);
+    try {
+      const res = await fetch(
+        `/api/search?q=${encodeURIComponent(activeQuery)}&pageToken=${encodeURIComponent(nextToken)}`,
+      );
+      const data = await res.json();
+      if (res.ok) {
+        setResults((prev) => {
+          const seen = new Set(prev.map((r) => r.video_id));
+          const merged = [...prev];
+          for (const r of (data.results ?? []) as SearchResult[]) {
+            if (!seen.has(r.video_id)) merged.push(r);
+          }
+          return merged;
+        });
+        setNextToken(data.nextPageToken ?? null);
+      }
+    } catch {
+      /* keep what we have; scrolling again retries */
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextToken, loadingMore, activeQuery]);
+
+  useEffect(() => {
+    if (phase !== "results" || !nextToken) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: "600px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [phase, nextToken, loadMore]);
 
   // Create the note (fetch transcript + chunk), then hand off to the reader.
   // Generation itself runs in the background (see BackgroundGenerator), so the
@@ -142,9 +191,21 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
           {results.length === 0 ? (
             <p className="text-muted">No results. Try a different title, or paste the link directly.</p>
           ) : (
-            results.map((r) => (
-              <ResultCard key={r.video_id} result={r} onPick={(res) => createNote({ videoId: res.video_id })} />
-            ))
+            <>
+              {results.map((r) => (
+                <ResultCard key={r.video_id} result={r} onPick={(res) => createNote({ videoId: res.video_id })} />
+              ))}
+              {/* Infinite scroll: this sentinel triggers the next page as it nears the viewport. */}
+              <div ref={sentinelRef} aria-hidden />
+              {loadingMore && (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-5 w-5 animate-spin text-oxblood" />
+                </div>
+              )}
+              {!nextToken && (
+                <p className="py-4 text-center text-xs text-muted">That&rsquo;s all for this search.</p>
+              )}
+            </>
           )}
         </div>
       )}
