@@ -78,16 +78,18 @@ class DownloaderService : Service() {
         val base = Prefs.BASE_URL.trimEnd('/')
         val token = Prefs.token(this)
         if (token.isBlank()) {
-            setStatus("No token — paste your agent token, then Start")
+            // No token yet — connect from the app's Settings. Stay idle, don't nag.
+            setStatus("Not connected")
             stopSelf()
             return
         }
 
-        // Wait for youtubedl-android to finish unpacking, then keep yt-dlp fresh.
-        setStatus("Preparing yt-dlp…")
+        // Wait for youtubedl-android to finish unpacking, then pull the NIGHTLY yt-dlp so
+        // YouTube's frequent changes don't break downloads (biggest reliability lever).
+        setStatus("Preparing…")
         while (!VerbatimApp.ready && currentCoroutineActive()) delay(1000)
         try {
-            YoutubeDL.getInstance().updateYoutubeDL(applicationContext)
+            YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
         } catch (e: Exception) {
             Log.w(VerbatimApp.TAG, "yt-dlp self-update skipped: ${e.message}")
         }
@@ -95,12 +97,11 @@ class DownloaderService : Service() {
         setStatus("Polling…")
         while (currentCoroutineActive()) {
             try {
-                for (job in fetchJobs(base, token)) {
-                    processJob(base, token, job)
-                }
+                val jobs = fetchJobs(base, token)
+                if (jobs.isEmpty()) setStatus("Polling…") else for (job in jobs) processJob(base, token, job)
             } catch (e: Exception) {
                 Log.w(VerbatimApp.TAG, "poll error: ${e.message}")
-                setStatus("Waiting (offline?)…")
+                setStatus("Waiting for connection…")
             }
             delay(POLL_SECONDS * 1000L)
         }
@@ -142,12 +143,12 @@ class DownloaderService : Service() {
             markUploaded(base, token, noteId, storagePath)
             setStatus("Handed off: $title")
         } catch (e: Exception) {
+            // Keep the real reason in the logs + server (for debugging), but keep the
+            // user-facing status clean — no raw errors on screen.
             Log.e(VerbatimApp.TAG, "job $noteId failed", e)
             val reason = (e.message ?: e.javaClass.simpleName).replace("\n", " ").trim()
             reportError(base, token, noteId, reason)
-            // Show the real reason (yt-dlp's message) in the status/notification so failures
-            // are diagnosable without a computer. Expand the notification to read it all.
-            setStatus("Failed: ${reason.take(160)}")
+            setStatus("Couldn't fetch that one — will retry")
         }
     }
 

@@ -64,6 +64,12 @@ class MainActivity : AppCompatActivity() {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(statusReceiver, filter)
         }
+        // Re-sync the bar with the latest status (which also drives the notification) in
+        // case it changed while the activity was paused.
+        val s = Prefs.status(this)
+        b.statusText.text = s
+        running = s.isNotBlank() && s != "Stopped" && s != "Not connected"
+        render()
     }
 
     override fun onPause() {
