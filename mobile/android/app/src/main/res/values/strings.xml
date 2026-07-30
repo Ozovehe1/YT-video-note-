@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Verbatim</string>
+    <string name="channel_name">Verbatim helper</string>
+    <string name="channel_desc">Downloads audio for your Verbatim notes.</string>
+</resources>

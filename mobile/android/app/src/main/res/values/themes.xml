@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Verbatim" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#4A0E14</item>
+        <item name="colorOnPrimary">#F5F0E8</item>
+    </style>
+</resources>

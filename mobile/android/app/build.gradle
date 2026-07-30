@@ -1,0 +1,71 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.verbatim.helper'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.verbatim.helper"
+        // youtubedl-android requires minSdk 24.
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // We ship the debug variant for v1; release kept unsigned/simple.
+        }
+    }
+
+    // youtubedl-android bundles a Python runtime + native libs. These excludes
+    // avoid duplicate-file merge failures from the bundled archives.
+    packagingOptions {
+        resources {
+            pickFirsts += ['**/libpython*.so', '**/libc++_shared.so']
+            excludes += [
+                'META-INF/DEPENDENCIES',
+                'META-INF/LICENSE',
+                'META-INF/LICENSE.md',
+                'META-INF/LICENSE.txt',
+                'META-INF/NOTICE',
+                'META-INF/NOTICE.md',
+                'META-INF/NOTICE.txt',
+                'META-INF/*.kotlin_module'
+            ]
+        }
+        // The Python interpreter dlopen's its libs from the extracted path.
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    def ytdl = "0.18.1"
+    implementation "io.github.junkfood02.youtubedl-android:library:$ytdl"
+    implementation "io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl"
+
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+}
