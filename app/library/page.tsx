@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { Plus, BookMarked } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -16,6 +16,22 @@ export default function LibraryPage() {
   const [list, setList] = useState<Note[] | null>(null);
   const [pct, setPct] = useState<Map<string, number>>(new Map());
 
+  const fetchNotes = useCallback(async (): Promise<{ notes: Note[]; m: Map<string, number> } | null> => {
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return null;
+    const [notesRes, progressRes] = await Promise.all([
+      supabase.from("notes").select("*").order("created_at", { ascending: false }),
+      supabase.from("reading_progress").select("note_id, percent"),
+    ]);
+    const notes = (notesRes.data ?? []) as Note[];
+    const m = new Map<string, number>();
+    for (const p of progressRes.data ?? []) m.set(p.note_id, p.percent);
+    return { notes, m };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -28,24 +44,14 @@ export default function LibraryPage() {
         setPct(cached.percent);
       }
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled && !cached.notes.length) setList([]);
-          return;
-        }
-        const [notesRes, progressRes] = await Promise.all([
-          supabase.from("notes").select("*").order("created_at", { ascending: false }),
-          supabase.from("reading_progress").select("note_id, percent"),
-        ]);
+        const res = await fetchNotes();
         if (cancelled) return;
-        const notes = (notesRes.data ?? []) as Note[];
-        const m = new Map<string, number>();
-        for (const p of progressRes.data ?? []) m.set(p.note_id, p.percent);
-        setList(notes);
-        setPct(m);
+        if (res) {
+          setList(res.notes);
+          setPct(res.m);
+        } else if (!cached.notes.length) {
+          setList([]);
+        }
       } catch {
         if (!cancelled && !cached.notes.length) setList([]);
       }
@@ -53,7 +59,25 @@ export default function LibraryPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchNotes]);
+
+  // While any note is still being produced, refresh so its badge (Transcribing → ready) updates.
+  const hasPending = (list ?? []).some((n) => n.status !== "ready" && n.status !== "error");
+  useEffect(() => {
+    if (!hasPending) return;
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetchNotes();
+        if (res) {
+          setList(res.notes);
+          setPct(res.m);
+        }
+      } catch {
+        /* offline — keep what we have */
+      }
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [hasPending, fetchNotes]);
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-12 sm:px-8">

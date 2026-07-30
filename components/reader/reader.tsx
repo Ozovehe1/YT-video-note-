@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
   ChevronRight,
@@ -31,8 +30,6 @@ const THEMES: { key: ReaderTheme; label: string }[] = [
   { key: "contrast", label: "Contrast" },
 ];
 
-const driveSleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 export function Reader({
   note,
   sections,
@@ -46,7 +43,6 @@ export function Reader({
   initialIndex: number;
   profile: Profile;
 }) {
-  const router = useRouter();
   const total = sections.length;
   const [index, setIndex] = useState(Math.min(initialIndex, Math.max(total - 1, 0)));
   const [theme, setTheme] = useState<ReaderTheme>(profile.default_theme);
@@ -141,22 +137,8 @@ export function Reader({
   const partsDone = note.chunk_cursor ?? 0;
   const genPercent = parts > 0 ? Math.min(96, Math.round((partsDone / parts) * 100)) : 0;
 
-  // While the audio is being fetched + transcribed by the local helper, poll for the
-  // status to flip to "processing" so the reader advances on its own.
-  useEffect(() => {
-    if (note.status !== "awaiting_audio" && note.status !== "transcribing") return;
-    let stopped = false;
-    (async () => {
-      while (!stopped) {
-        await driveSleep(6000);
-        if (stopped) return;
-        router.refresh();
-      }
-    })();
-    return () => {
-      stopped = true;
-    };
-  }, [note.status, note.id, router]);
+  // (The reader page re-polls the note while it's still being produced and passes fresh
+  // props here, so this component just reflects whatever `note`/`sections` it's given.)
 
   return (
     <div

@@ -59,6 +59,9 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
           return merged;
         });
         setNextToken(data.nextPageToken ?? null);
+      } else {
+        // Failed page (e.g. quota) — stop so the observer can't loop the same failing request.
+        setNextToken(null);
       }
     } catch {
       /* keep what we have; scrolling again retries */
