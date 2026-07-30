@@ -51,13 +51,39 @@ export async function cacheLibrary(
 ) {
   const d = await db();
   if (!d) return;
+  // The incoming list is authoritative, so reconcile deletions: any locally-cached note that's no
+  // longer on the server (e.g. one you deleted) must be dropped, along with its sections/progress.
+  // Without this the sync is additive-only and a deleted note lingers on-device, flashing back into
+  // the library on the next load before the server list overwrites it.
+  const keep = new Set(notes.map((n) => n.id));
+  const localIds = (await d.getAllKeys("notes")) as string[];
+  const stale = localIds.filter((id) => !keep.has(id));
+
   const tx = d.transaction(["notes", "sections", "progress", "kv"], "readwrite");
   await Promise.all([
+    ...stale.flatMap((id) => [
+      tx.objectStore("notes").delete(id),
+      tx.objectStore("sections").delete(id),
+      tx.objectStore("progress").delete(id),
+    ]),
     ...notes.map((n) => tx.objectStore("notes").put(n)),
     ...sections.map((s) => tx.objectStore("sections").put(s)),
     ...progress.map((p) => tx.objectStore("progress").put(p)),
     tx.objectStore("kv").put(userId, "userId"),
     profile ? tx.objectStore("kv").put(profile, "profile") : Promise.resolve(),
+  ]);
+  await tx.done;
+}
+
+/** Remove a note and its sections/progress from the device (call right after a server delete). */
+export async function removeCachedNote(id: string) {
+  const d = await db();
+  if (!d) return;
+  const tx = d.transaction(["notes", "sections", "progress"], "readwrite");
+  await Promise.all([
+    tx.objectStore("notes").delete(id),
+    tx.objectStore("sections").delete(id),
+    tx.objectStore("progress").delete(id),
   ]);
   await tx.done;
 }

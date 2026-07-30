@@ -7,11 +7,14 @@ import { MoreVertical, Trash2, Download, Loader2 } from "lucide-react";
 import type { Note } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { deleteNote } from "@/app/actions/notes";
+import { removeCachedNote } from "@/lib/offline/db";
 import { ExportMenu } from "./export-menu";
 
 export function NoteCard({ note, percent }: { note: Note; percent: number }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deleted, setDeleted] = useState(false);
   const [pending, startTransition] = useTransition();
   const ref = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -21,11 +24,26 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setMenuOpen(false);
         setExportOpen(false);
+        setConfirming(false);
       }
     }
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
+
+  function remove() {
+    startTransition(async () => {
+      await deleteNote(note.id); // server (Supabase + RLS)
+      await removeCachedNote(note.id).catch(() => {}); // device (IndexedDB) — so it can't flash back
+      setMenuOpen(false);
+      setConfirming(false);
+      setDeleted(true); // hide the card; the note is gone from both places
+      router.refresh();
+    });
+  }
+
+  // Once removed, drop the card entirely so the library updates instantly (no flash-back).
+  if (deleted) return null;
 
   const processing = note.status === "processing";
   const errored = note.status === "error";
@@ -84,19 +102,22 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
         </div>
       </div>
 
-      {/* Kebab menu */}
+      {/* Actions menu. The button stays visible (there's no hover on touch, so an opacity-on-hover
+          control would be invisible on a phone). */}
       <div className="absolute bottom-3 right-3" ref={ref}>
         <button
           onClick={() => {
             setMenuOpen((v) => !v);
             setExportOpen(false);
+            setConfirming(false);
           }}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted opacity-0 transition-opacity hover:bg-panel hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-hairline bg-paper/80 text-muted backdrop-blur transition-colors hover:bg-panel hover:text-ink"
           aria-label="Note actions"
         >
           <MoreVertical className="h-4 w-4" />
         </button>
-        {menuOpen && !exportOpen && (
+
+        {menuOpen && !exportOpen && !confirming && (
           <div className="absolute bottom-9 right-0 w-44 overflow-hidden rounded-xl border border-hairline bg-surface shadow-lift animate-fade-up">
             <button
               onClick={() => setExportOpen(true)}
@@ -106,19 +127,38 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
               <Download className="h-4 w-4 text-muted" /> Download…
             </button>
             <button
-              onClick={() =>
-                startTransition(async () => {
-                  await deleteNote(note.id);
-                  router.refresh();
-                })
-              }
-              disabled={pending}
-              className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-oxblood transition-colors hover:bg-oxblood/5"
+              onClick={() => setConfirming(true)}
+              className="flex w-full items-center gap-2.5 border-t border-hairline px-4 py-2.5 text-left text-sm text-oxblood transition-colors hover:bg-oxblood/5"
             >
-              <Trash2 className="h-4 w-4" /> {pending ? "Deleting…" : "Delete"}
+              <Trash2 className="h-4 w-4" /> Delete
             </button>
           </div>
         )}
+
+        {confirming && (
+          <div className="absolute bottom-9 right-0 w-56 overflow-hidden rounded-xl border border-hairline bg-surface p-4 shadow-lift animate-fade-up">
+            <p className="text-sm font-medium text-ink">Delete this note?</p>
+            <p className="mt-1 text-xs text-muted">This removes it from your library for good.</p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirming(false)}
+                disabled={pending}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-ink disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={remove}
+                disabled={pending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-oxblood px-3 py-1.5 text-sm font-semibold text-paper transition-transform hover:-translate-y-px disabled:opacity-60"
+              >
+                {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                {pending ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {exportOpen && (
           <div className="absolute bottom-9 right-0 animate-fade-up">
             <ExportMenu noteId={note.id} onClose={() => setExportOpen(false)} />
