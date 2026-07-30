@@ -14,6 +14,13 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        // Ship native libs for 64-bit ARM only. Every modern phone (incl. Infinix
+        // Smart 9 / Android 14) is arm64-v8a, and dropping the other 3 ABIs cuts the
+        // APK from ~205 MB to ~65 MB. One APK, nothing to pick.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
     }
 
     buildFeatures {
