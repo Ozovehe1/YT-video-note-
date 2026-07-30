@@ -143,8 +143,11 @@ class DownloaderService : Service() {
             setStatus("Handed off: $title")
         } catch (e: Exception) {
             Log.e(VerbatimApp.TAG, "job $noteId failed", e)
-            reportError(base, token, noteId, e.message ?: "download failed")
-            setStatus("Failed: $title — retrying later")
+            val reason = (e.message ?: e.javaClass.simpleName).replace("\n", " ").trim()
+            reportError(base, token, noteId, reason)
+            // Show the real reason (yt-dlp's message) in the status/notification so failures
+            // are diagnosable without a computer. Expand the notification to read it all.
+            setStatus("Failed: ${reason.take(160)}")
         }
     }
 
@@ -214,6 +217,7 @@ class DownloaderService : Service() {
         NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle("Verbatim helper")
             .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text)) // expandable — full error is readable
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

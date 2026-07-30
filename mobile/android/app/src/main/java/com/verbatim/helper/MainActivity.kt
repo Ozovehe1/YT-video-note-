@@ -1,7 +1,6 @@
 package com.verbatim.helper
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -9,10 +8,8 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.text.InputType
 import android.webkit.JavascriptInterface
 import android.webkit.WebViewClient
-import android.widget.EditText
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -56,8 +53,6 @@ class MainActivity : AppCompatActivity() {
         b.toggleButton.setOnClickListener {
             if (running) stop() else b.webView.loadUrl("${Prefs.BASE_URL}/settings")
         }
-        // Fallback for advanced users / the browser case: long-press to paste a token by hand.
-        b.statusText.setOnLongClickListener { promptManualToken(); true }
     }
 
     override fun onResume() {
@@ -119,21 +114,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         b.toggleButton.text = if (running) "Stop" else "Connect"
-    }
-
-    private fun promptManualToken() {
-        val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            hint = "vba_…"
-            setText(Prefs.token(this@MainActivity))
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Paste your token")
-            .setMessage("From Settings → Connect your phone. (Normally the “Connect this device” button does this for you.)")
-            .setView(input)
-            .setPositiveButton("Connect") { _, _ -> connectWithToken(input.text.toString().trim()) }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     /** Bridge exposed to the web app as `window.VerbatimNative`. */
