@@ -25,10 +25,9 @@ export default function GlobalError({ reset }: { error: Error & { digest?: strin
         }}
       >
         <span style={{ width: 48, height: 48, borderRadius: 16, background: "#8A2B22" }} aria-hidden />
-        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>You&rsquo;re offline</h1>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>No internet connection</h1>
         <p style={{ maxWidth: 360, fontSize: "0.9rem", lineHeight: 1.6, color: "#7a715f", margin: 0 }}>
-          The app needs an internet connection to load this. Your saved notes are ready to read in your
-          library — everything else returns the moment you&rsquo;re back online.
+          Check your connection and try again. Notes you&rsquo;ve saved are ready to read in your library.
         </p>
         <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
           <button

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>No internet connection — Verbatim</title>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 1rem; padding: 1.5rem 1.75rem; text-align: center;
+        background: #F5F0E8; color: #221E16;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mark { width: 52px; height: 52px; border-radius: 15px; background: #8A2B22; }
+      h1 { margin: 0.5rem 0 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; }
+      p { margin: 0; max-width: 20rem; font-size: 0.95rem; line-height: 1.6; color: #7a715f; }
+      button {
+        margin-top: 0.75rem; border: 0; border-radius: 12px;
+        background: #8A2B22; color: #F5F0E8; padding: 0.7rem 1.25rem;
+        font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      }
+      button:active { transform: translateY(1px); }
+    </style>
+  </head>
+  <body>
+    <div class="mark" aria-hidden="true"></div>
+    <h1>No internet connection</h1>
+    <p>Check your connection and try again.</p>
+    <button id="retry" type="button">Try again</button>
+    <script>
+      document.getElementById("retry").addEventListener("click", function () {
+        // Ask the native shell to reload the live app; fall back to a plain reload in a browser.
+        if (window.VerbatimNative && typeof window.VerbatimNative.reload === "function") {
+          window.VerbatimNative.reload();
+        } else {
+          location.reload();
+        }
+      });
+    </script>
+  </body>
+</html>

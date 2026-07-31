@@ -137,6 +137,20 @@ export async function getCachedNote(id: string): Promise<CachedNote | null> {
   };
 }
 
+/** note_ids that already have their sections cached — lets the sync skip finished notes and resume. */
+export async function getCachedSectionNoteIds(): Promise<Set<string>> {
+  const d = await db();
+  if (!d) return new Set();
+  return new Set((await d.getAllKeys("sections")) as string[]);
+}
+
+/** Cache one note's sections (used by the incremental, resumable library sync). */
+export async function putNoteSections(noteId: string, sections: NoteSection[]) {
+  const d = await db();
+  if (!d) return;
+  await d.put("sections", { note_id: noteId, sections });
+}
+
 /** Load the whole library list + a progress map, from the device. */
 export async function getCachedLibrary(): Promise<{ notes: Note[]; percent: Map<string, number> }> {
   const d = await db();

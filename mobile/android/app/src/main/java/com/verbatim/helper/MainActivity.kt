@@ -109,7 +109,23 @@ class MainActivity : AppCompatActivity() {
             // (the plain website is info-only). Also load the app entry, not the landing.
             userAgentString = "$userAgentString VerbatimApp/1"
         }
-        b.webView.webViewClient = WebViewClient()
+        // On a main-frame load failure of the live site (e.g. offline before the app has ever cached
+        // anything), show the bundled offline page instead of the raw WebView error — "No internet
+        // connection / Check your connection and try again". The BASE_URL guard stops the asset page
+        // itself from re-triggering the fallback.
+        b.webView.webViewClient = object : WebViewClient() {
+            override fun onReceivedError(
+                view: android.webkit.WebView,
+                request: android.webkit.WebResourceRequest,
+                error: android.webkit.WebResourceError,
+            ) {
+                if (request.isForMainFrame &&
+                    request.url.toString().startsWith(Prefs.BASE_URL)
+                ) {
+                    view.loadUrl("file:///android_asset/offline.html")
+                }
+            }
+        }
         b.webView.addJavascriptInterface(WebBridge(), "VerbatimNative")
 
         // A WebView never downloads files on its own — without this, tapping an export format in the
@@ -182,6 +198,12 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun isRunning(): Boolean = running
+
+        /** The bundled offline page's "Try again" button — reload the live app. */
+        @JavascriptInterface
+        fun reload() {
+            runOnUiThread { b.webView.loadUrl("${Prefs.BASE_URL}/library") }
+        }
     }
 
     override fun onDestroy() {
