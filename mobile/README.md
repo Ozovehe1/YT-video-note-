@@ -1,6 +1,6 @@
 # Verbatim phone helper (Android app)
 
-A tiny Android app that replaces the Termux script. It does two things:
+A tiny Android app — the phone side of Verbatim. It does two things:
 
 1. **Shows the live Verbatim web app** in a WebView (`https://yverbatim.vercel.app`) — you use it
    exactly like the website: paste a link or search a video.
@@ -10,7 +10,7 @@ A tiny Android app that replaces the Termux script. It does two things:
    reliable — uploads the audio to Supabase Storage, and hands it back to the app for Modal to
    transcribe.
 
-The backend is **unchanged**: the service calls the same agent API the Termux helper did
+The service talks to the app's agent API only
 (`/api/agent/jobs`, `/api/agent/jobs/{id}/uploaded`, `/api/agent/jobs/{id}/error`).
 
 ## Get the APK (no PC needed)

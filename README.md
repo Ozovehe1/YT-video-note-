@@ -28,7 +28,7 @@ automatically. You only ever paste a link; a small helper on your phone does the
 Web app (Next.js on Vercel)
   1. You paste a link / search a title  →  note created as "awaiting_audio"     (app/api/notes)
 
-Your phone  (Android app in mobile/, or the Termux helper in agent/)
+Your phone  (native Android app in mobile/)
   2. Polls the agent API, claims the note, and downloads bestaudio with yt-dlp
      from your home IP, then uploads the audio to Supabase Storage             (app/api/agent/*)
 
@@ -72,16 +72,12 @@ Web app
 
 ## The phone helper
 
-The residential-IP download runs on your phone. Two ways to run it — pick one:
+The residential-IP download runs on your phone via the **native Android app** — a real installable app
+that shows the live web app *and* runs the downloader as a background service. No commands. It's built
+in the cloud by a GitHub Action, so you don't need a computer. **See [`mobile/README.md`](mobile/README.md).**
 
-- **Android app (recommended, easiest)** — a real installable app that shows the live web app *and*
-  runs the downloader as a background service. No commands. Built in the cloud by a GitHub Action, so
-  you don't need a computer. **See [`mobile/README.md`](mobile/README.md).**
-- **Termux script (\$0, no app install)** — a small Python script under `agent/` that does the same
-  poll → download → upload loop. **See [`agent/README.md`](agent/README.md).**
-
-Both use the same agent API and are multi-user: each person signs into their own account, generates
-their own token in **Settings → Connect your phone**, and pastes it in. Jobs are scoped by token.
+It's multi-user: each person signs into their own account, taps **Settings → Connect this device** to
+link the phone (one tap, no typing), and jobs are scoped to their token.
 
 ## Getting started
 
@@ -92,7 +88,7 @@ their own token in **Settings → Connect your phone**, and pastes it in. Jobs a
 | **Supabase** | Accounts, data, audio storage | <https://supabase.com/> (create a project) |
 | **Modal** | GPU transcription (MOSS diarizing ASR) | <https://modal.com/> |
 | **YouTube Data API v3** | Title search + video metadata | Google Cloud Console → enable *YouTube Data API v3* → API key |
-| **A phone** | Downloading audio on a residential IP | Android (app or Termux) |
+| **A phone** | Downloading audio on a residential IP | Android (the app in `mobile/`) |
 
 ### 2. Set up Supabase
 
@@ -185,7 +181,7 @@ lib/
   offline/db                     on-device (IndexedDB) store for offline reading
   supabase/{client,server,middleware,admin}
 public/sw.js                     service worker (offline app shell + cached pages)
-agent/                           Modal ASR app (modal_asr.py) + Termux helper (verbatim_agent.py)
+agent/                           Modal ASR service (modal_asr.py)
 mobile/                          native Android phone-helper app (+ CI that builds the APK)
 supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio_path
 ```

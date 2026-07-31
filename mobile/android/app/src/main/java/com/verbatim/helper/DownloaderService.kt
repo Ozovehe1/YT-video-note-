@@ -32,10 +32,10 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * Foreground service: the Termux `verbatim_agent.py` loop, reimplemented natively.
+ * Foreground service — the phone's residential-IP downloader.
  * Poll the app for audio jobs → download bestaudio with youtubedl-android (on the
  * phone's residential IP) → PUT the file to the signed Supabase upload URL → tell
- * the app it's ready. The backend agent API is unchanged.
+ * the app it's ready.
  */
 class DownloaderService : Service() {
 

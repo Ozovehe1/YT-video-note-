@@ -8,9 +8,8 @@ object Prefs {
     private const val KEY_TOKEN = "agent_token"
     private const val KEY_STATUS = "status"
 
-    // The live web app the phone helper talks to. The native service reuses the
-    // exact same agent API the Termux script did, so nothing here is app-specific
-    // beyond the base URL.
+    // The live web app the phone helper talks to (WebView + the agent API the
+    // downloader service calls). Nothing here is app-specific beyond the base URL.
     const val BASE_URL = "https://yverbatim.vercel.app"
 
     private fun sp(ctx: Context) =

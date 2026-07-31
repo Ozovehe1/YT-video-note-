@@ -1,61 +1,33 @@
-# Verbatim phone helper ("automated Seal")
+# Verbatim ASR (Modal)
 
-YouTube blocks datacenter IPs (any cloud server), so the download can't run on the
-server — it has to come from a normal residential connection. That's exactly why apps
-like Seal work: they run on your phone. This helper does the same thing, automatically:
-it runs on your phone, downloads each note's audio with `yt-dlp`, and hands it to the app.
+The GPU transcription service. The web app hands it a short-lived signed URL to a note's audio
+(downloaded on the user's phone by the [native Android app](../mobile)); Modal fetches it,
+transcribes + diarizes with **MOSS-Transcribe-Diarize**, and POSTs the speaker-labeled segments back
+to the app. Modal never touches YouTube.
 
-**You still just paste a link in the app.** The helper does the fetching in the background.
-
-> Prefer a one-tap app over Termux commands? The **native Android app** in [`../mobile`](../mobile)
-> does exactly this as a background service — install the APK, paste your token, done. This Termux
-> script is the no-install (\$0) alternative; both use the same agent API.
+Long audio is split into **~20-minute chunks that transcribe in parallel** on separate GPU workers and
+are stitched back on an absolute timeline, so any length works — and finishes in about the time of its
+single slowest chunk.
 
 ```
-app (paste link) → note "awaiting_audio"
-   → phone helper polls, yt-dlp downloads the audio (your home IP), uploads it
-   → app sends the audio to Modal → transcribes → your note appears
+app  → POST { audio_url, note_id, callback_url, secret }  → Modal endpoint
+Modal → download audio → split into ~20-min slices → transcribe each in parallel (MOSS)
+      → stitch on the absolute timeline
+      → POST { note_id, status, segments } back to callback_url  (X-ASR-Signature HMAC header)
 ```
 
 ## Files
-- `verbatim_agent.py` — the helper (poll → download → upload → notify).
-- `requirements.txt` — `yt-dlp`, `requests`.
-- `modal_asr.py` — the Modal ASR app (deploy separately in a Modal Notebook).
+- `modal_asr.py` — the Modal app: the image, the GPU `Pipeline` (one slice per worker), the CPU
+  `orchestrate` fan-out, and the `transcribe` HTTP trigger.
 
-## One-time setup on your phone (Termux)
+## Deploy
+1. Open `modal_asr.py` in a **Modal Notebook**, add `app.deploy()` at the end, and run it.
+2. Create one Modal **secret** named `tailscale` holding `ASR_WEBHOOK_SECRET` — the same value as the
+   app's `ASR_WEBHOOK_SECRET` env var. (The secret name is legacy; only `ASR_WEBHOOK_SECRET` is read.)
+3. The deployed endpoint URL — `https://<workspace>--verbatim-asr-transcribe.modal.run` — is stable.
+   Set it as `MODAL_TRANSCRIBE_URL` in the app.
 
-1. Install **Termux** and **Termux:Boot** from F-Droid (not the Play Store version).
-2. In Termux:
-   ```sh
-   pkg update && pkg install -y python ffmpeg
-   pip install yt-dlp requests
-   ```
-3. Get `verbatim_agent.py` onto the phone (e.g. `curl -O` the raw file from the repo, or
-   paste it into a file).
-4. Generate an **agent token** in the app: **Settings → Connect your phone → Generate token**
-   (copy it — shown once).
-5. Set your config and run it:
-   ```sh
-   export VERBATIM_URL="https://your-app.vercel.app"
-   export VERBATIM_AGENT_TOKEN="vba_...paste the token..."
-   python verbatim_agent.py
-   ```
-   You should see `verbatim helper started; polling …`. Create a note in the app and watch
-   it download + hand off.
-
-## Keep it running
-Android kills background apps. To make the helper survive:
-- Disable **battery optimization** for Termux (Android Settings → Apps → Termux → Battery → Unrestricted).
-- Use **Termux:Boot**: put a script in `~/.termux/boot/` that exports the two env vars and
-  runs `python /path/to/verbatim_agent.py`, so it starts on reboot.
-- Optionally `termux-wake-lock` to hold a wake lock while it runs.
-
-If the helper isn't running, new notes just wait in **"Waiting for your phone"** until it is —
-nothing is lost.
-
-## Config (env)
-| Var | Meaning |
-|---|---|
-| `VERBATIM_URL` | Your app's URL, e.g. `https://your-app.vercel.app` |
-| `VERBATIM_AGENT_TOKEN` | The token from Settings → Connect your phone |
-| `VERBATIM_POLL_SECONDS` | Poll interval (default 20) |
+## Contract
+- **In:** `POST { audio_url, note_id, callback_url, secret }` — `secret` must equal `ASR_WEBHOOK_SECRET`.
+- **Out:** `POST { note_id, status: "done" | "error", segments?, error? }` to `callback_url`, signed
+  with an `X-ASR-Signature` HMAC-SHA256 header the app verifies (`lib/asr-format.ts`).
