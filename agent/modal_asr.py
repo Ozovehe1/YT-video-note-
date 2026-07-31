@@ -197,8 +197,12 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         n = max(1, math.ceil(duration / CHUNK_SECONDS))
         args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS) for i in range(n)]
 
+        # Look the class up by name at call-time (same reason as the endpoint below): a serialized
+        # Notebook deploy can't pickle an unhydrated Cls global. .starmap fans the slices out across
+        # parallel GPU workers, unpacking each (audio_url, offset, dur) tuple as positional args.
+        pipeline = modal.Cls.from_name("verbatim-asr", "Pipeline")()
         segments = []
-        for part in Pipeline().transcribe_slice.starmap(args):
+        for part in pipeline.transcribe_slice.starmap(args):
             segments.extend(part)
         if not segments:
             raise RuntimeError("No speech found in the audio")
