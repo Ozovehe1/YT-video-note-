@@ -17,12 +17,11 @@ export default function Error({ reset }: { error: Error & { digest?: string }; r
     <main className="mx-auto flex min-h-[70vh] max-w-md flex-col items-center justify-center px-6 text-center">
       <span className="inline-block h-12 w-12 rounded-2xl bg-oxblood" aria-hidden />
       <h1 className="mt-6 font-display text-2xl font-semibold text-ink">
-        {offline ? "You’re offline" : "Something went wrong"}
+        {offline ? "You’re offline" : "This needs a connection"}
       </h1>
       <p className="mt-3 text-sm leading-relaxed text-muted">
-        {offline
-          ? "This part needs a connection. Notes you’ve already opened are still readable from your library."
-          : "That page hit a snag. Try again, or head back to your library."}
+        This part of the app needs an internet connection. Your saved notes are ready to read in your
+        library — everything else comes back the moment you’re online again.
       </p>
       <div className="mt-6 flex items-center gap-3">
         <button

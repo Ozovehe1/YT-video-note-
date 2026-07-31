@@ -80,6 +80,15 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
     return null;
   }
 
+  // Turn a thrown fetch/network error into friendly, non-technical copy.
+  function friendlyError(e: unknown): string {
+    const msg = e instanceof Error ? e.message : "";
+    if ((typeof navigator !== "undefined" && navigator.onLine === false) || /failed to fetch|networkerror|load failed/i.test(msg)) {
+      return "You’re offline — connect this device once you’re back online.";
+    }
+    return "Couldn’t connect just now. Please try again.";
+  }
+
   // In-app: one tap → mint a token and hand it straight to the downloader.
   async function connectDevice() {
     setBusy(true);
@@ -91,7 +100,7 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
         setConnected(true);
       }
     } catch (e) {
-      setError(`Couldn't connect: ${e instanceof Error ? e.message : "request failed"}.`);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -115,7 +124,7 @@ export function ConnectPhone({ appUrl }: { appUrl: string }) {
       const token = await mintToken();
       if (token) setFresh(token);
     } catch (e) {
-      setError(`Network error: ${e instanceof Error ? e.message : "request failed"}. Check your connection and that you're signed in.`);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
