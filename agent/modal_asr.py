@@ -105,21 +105,21 @@ class Pipeline:
         self.device = resolve_device("auto")
         self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
 
-        # Efficient attention: try FlashAttention-2, else PyTorch SDPA (which itself dispatches to
-        # the FlashAttention-2 kernel on L4/Ada — big speedup on long-audio prefill), else eager.
-        # Each fallback is guarded so a missing kernel or an unsupported kwarg can never brick load.
-        model = None
-        for attn in ("flash_attention_2", "sdpa", None):
-            try:
-                kwargs = {"trust_remote_code": True, "dtype": "auto"}
-                if attn:
-                    kwargs["attn_implementation"] = attn
-                model = AutoModelForCausalLM.from_pretrained(MODEL_ID, **kwargs)
-                break
-            except Exception:
-                model = None
-        if model is None:  # last resort — plain load
-            model = AutoModelForCausalLM.from_pretrained(MODEL_ID, trust_remote_code=True, dtype="auto")
+        # Ask for SDPA attention: on the L4/Ada GPU PyTorch's SDPA runs the FlashAttention-2 kernel,
+        # which speeds up the long-audio prefill. flash-attn isn't installed in the image, so we do
+        # NOT request "flash_attention_2" directly — SDPA is how that kernel is reached here. This is
+        # guarded: if this MOSS build doesn't advertise SDPA support, we fall back to the EXACT config
+        # from the official example (trust_remote_code + dtype="auto") — the one that already
+        # transcribed successfully — so this can never fail to load. Runs at container start, not at
+        # deploy, so it also can't affect `app.deploy()`.
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID, trust_remote_code=True, dtype="auto", attn_implementation="sdpa",
+            )
+        except Exception:
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID, trust_remote_code=True, dtype="auto",
+            )
 
         self.model = model.to(dtype=self.dtype).to(self.device).eval()
         if USE_TORCH_COMPILE:
