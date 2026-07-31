@@ -14,7 +14,15 @@ import type { Note, NoteSection, Profile } from "@/lib/types";
  * this replaces the server-side router.refresh() that a client page can't use.
  */
 export default function ReadPage() {
-  const { id } = useParams<{ id: string }>();
+  // Take the note id from the actual URL, not useParams(): offline, the service worker may serve a
+  // cached /read/<other> shell whose baked-in router params point at a DIFFERENT note, so the URL bar
+  // is the source of truth for which note was tapped. (SSR falls back to useParams.)
+  const params = useParams<{ id: string }>();
+  const [id] = useState<string>(() =>
+    typeof window !== "undefined"
+      ? decodeURIComponent(window.location.pathname.split("/").filter(Boolean).pop() || params.id || "")
+      : params.id || "",
+  );
   const [data, setData] = useState<CachedNote | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "missing">("loading");
 
