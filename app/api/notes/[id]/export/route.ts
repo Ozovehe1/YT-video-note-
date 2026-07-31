@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { toMarkdown } from "@/lib/export/markdown";
 import { toDocx } from "@/lib/export/docx";
 import { toEpub } from "@/lib/export/epub";
-import { toPdf } from "@/lib/export/pdf";
+import { toPdfWebStream } from "@/lib/export/pdf";
 import { safeFilename } from "@/lib/export/filename";
 import type { Note, NoteSection } from "@/lib/types";
 
@@ -56,8 +56,14 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
         return download(buf, "application/epub+zip", safeFilename(n.title, "epub"));
       }
       case "pdf": {
-        const buf = await toPdf(n, secs);
-        return download(buf, "application/pdf", safeFilename(n.title, "pdf"));
+        // Stream pdfkit's output straight through — no full buffer, so long notes don't blow the
+        // serverless time/memory budget the way react-pdf's buffered render did.
+        return new Response(toPdfWebStream(n, secs), {
+          headers: {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": `attachment; filename="${safeFilename(n.title, "pdf")}"`,
+          },
+        });
       }
     }
   } catch (err) {
