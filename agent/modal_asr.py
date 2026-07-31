@@ -55,8 +55,12 @@ image = (
 )
 
 # The trigger endpoint + orchestrator do no GPU work (download / probe / fan-out / HTTP), so they
-# run on a tiny CPU image that cold-starts fast.
-cpu_image = modal.Image.debian_slim(python_version="3.12").apt_install("ffmpeg")
+# run on a tiny CPU image that cold-starts fast. fastapi is required for @modal.fastapi_endpoint.
+cpu_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("ffmpeg")
+    .pip_install("fastapi[standard]")
+)
 
 app = modal.App("verbatim-asr")
 
