@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityMainBinding
     private var running = false
+    private var mainFrameRetries = 0 // cold-start retries before falling back to the offline page
 
     private val requestNotif =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { startServiceNow() }
@@ -109,19 +110,29 @@ class MainActivity : AppCompatActivity() {
             // (the plain website is info-only). Also load the app entry, not the landing.
             userAgentString = "$userAgentString VerbatimApp/1"
         }
-        // On a main-frame load failure of the live site (e.g. offline before the app has ever cached
-        // anything), show the bundled offline page instead of the raw WebView error — "No internet
-        // connection / Check your connection and try again". The BASE_URL guard stops the asset page
-        // itself from re-triggering the fallback.
+        // On a main-frame load failure of the live site, DON'T show the offline page immediately: on a
+        // cold launch the first navigation can fire before the service worker has activated, so an
+        // existing (cached) user would wrongly see it. Auto-retry a couple of times first (what "Try
+        // again" does) — the retry gets served by the now-ready SW from cache. Only when the retries are
+        // exhausted (genuinely offline with no cache) do we fall back to the bundled offline page.
         b.webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: android.webkit.WebView, url: String?) {
+                if (url != null && url.startsWith(Prefs.BASE_URL)) mainFrameRetries = 0
+            }
+
             override fun onReceivedError(
                 view: android.webkit.WebView,
                 request: android.webkit.WebResourceRequest,
                 error: android.webkit.WebResourceError,
             ) {
-                if (request.isForMainFrame &&
-                    request.url.toString().startsWith(Prefs.BASE_URL)
-                ) {
+                if (!request.isForMainFrame) return
+                val url = request.url.toString()
+                if (!url.startsWith(Prefs.BASE_URL)) return // ignore the file:// offline page itself
+                if (mainFrameRetries < 2) {
+                    mainFrameRetries++
+                    view.postDelayed({ view.loadUrl(url) }, 450L) // give the SW a moment to take over
+                } else {
+                    mainFrameRetries = 0
                     view.loadUrl("file:///android_asset/offline.html")
                 }
             }
