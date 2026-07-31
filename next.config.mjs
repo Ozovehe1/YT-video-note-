@@ -7,17 +7,12 @@ const nextConfig = {
     ],
   },
   // pdfkit (its .afm font-metric data), docx, and epub-gen-memory pull in Node built-ins / data
-  // files; keep them server-only so Next doesn't bundle them (pdfkit fonts fail if bundled).
+  // files; keep them server-only so Next doesn't bundle them, and Next's file-tracing ships their
+  // data files automatically (it resolves pdfkit's static `readFileSync(__dirname + '/data/*.afm')`
+  // reads on its own — the same way react-pdf's fonts already shipped). Do NOT add
+  // outputFileTracingIncludes for these: globbing pnpm's symlinked node_modules makes Vercel reject
+  // the deployment ("invalid deployment package … files in symlinked directories").
   serverExternalPackages: ["pdfkit", "docx", "epub-gen-memory"],
-  // pdfkit reads its standard-font metrics with `fs.readFileSync(__dirname + '/data/<Font>.afm')`
-  // — a computed path Vercel's file tracer can't see, so force the .afm files into the export
-  // function's bundle (both the pnpm-hoisted symlink path and the real store path).
-  outputFileTracingIncludes: {
-    "/api/notes/[id]/export": [
-      "./node_modules/pdfkit/js/data/*.afm",
-      "./node_modules/.pnpm/pdfkit@*/node_modules/pdfkit/js/data/*.afm",
-    ],
-  },
 };
 
 export default nextConfig;
