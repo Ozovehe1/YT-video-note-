@@ -9,7 +9,7 @@
  *  - YouTube thumbnails: best-effort cache-first (opaque).
  *  - Everything else (Supabase / Modal / API mutations): untouched — straight to the network.
  */
-const VERSION = "v5";
+const VERSION = "v6";
 const STATIC_CACHE = `verbatim-static-${VERSION}`;
 const PAGE_CACHE = `verbatim-pages-${VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -73,31 +73,36 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Page navigations → network-first; offline, fall back to the exact cached page, then a
-  // cached shell of the SAME route (the client pages read the id from the URL, so any cached
-  // /read/* shell renders any note from the local store), then the offline page.
+  // Page navigations → STALE-WHILE-REVALIDATE (app-shell model). Serve the cached shell INSTANTLY
+  // with no network wait — this is what makes the app appear immediately, offline AND online —
+  // while refreshing the cache from the network in the background. The client pages then load their
+  // data from IndexedDB (instant) and revalidate from Supabase. Fallbacks: the exact cached page →
+  // a cached shell of the SAME route (any cached /read/* renders any note from the local store) →
+  // the network (only when nothing is cached) → the offline page.
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
         const cache = await caches.open(PAGE_CACHE);
-        try {
-          const fresh = await fetch(request);
-          cache.put(request, fresh.clone());
-          return fresh;
-        } catch (e) {
-          const exact = await cache.match(request);
-          if (exact) return exact;
-          // Same-route shell fallback (SPA): e.g. an unvisited /read/<id> reuses a cached /read/*.
-          const path = new URL(request.url).pathname;
-          const seg = "/" + (path.split("/")[1] || "");
-          const keys = await cache.keys();
-          const shell = keys.find((k) => {
-            const p = new URL(k.url).pathname;
-            return p === seg || p.startsWith(seg + "/");
-          });
-          if (shell) return (await cache.match(shell)) || (await caches.match(OFFLINE_URL));
-          return (await caches.match(OFFLINE_URL)) || Response.error();
-        }
+        // Background refresh — never blocks the paint; on the cached paths we don't await it.
+        const fromNetwork = fetch(request)
+          .then((res) => {
+            if (res && res.ok) cache.put(request, res.clone());
+            return res;
+          })
+          .catch(() => null);
+
+        const exact = await cache.match(request);
+        if (exact) return exact; // instant — no waiting on the network
+
+        const seg = "/" + (url.pathname.split("/")[1] || "");
+        const keys = await cache.keys();
+        const shellKey = keys.find((k) => {
+          const p = new URL(k.url).pathname;
+          return p === seg || p.startsWith(seg + "/");
+        });
+        if (shellKey) return (await cache.match(shellKey)) || (await caches.match(OFFLINE_URL));
+
+        return (await fromNetwork) || (await caches.match(OFFLINE_URL)) || Response.error();
       })(),
     );
     return;
