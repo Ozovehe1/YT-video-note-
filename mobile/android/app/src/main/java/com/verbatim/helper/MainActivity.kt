@@ -1,15 +1,21 @@
 package com.verbatim.helper
 
 import android.Manifest
+import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.URLUtil
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -105,6 +111,28 @@ class MainActivity : AppCompatActivity() {
         }
         b.webView.webViewClient = WebViewClient()
         b.webView.addJavascriptInterface(WebBridge(), "VerbatimNative")
+
+        // A WebView never downloads files on its own — without this, tapping an export format in the
+        // reader (which navigates to a `Content-Disposition: attachment` response) does nothing. Hand
+        // the download to the system DownloadManager, passing the WebView's session cookies so the
+        // auth-protected export endpoint doesn't 401. The file lands in the public Downloads folder.
+        b.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            try {
+                val name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                val request = DownloadManager.Request(Uri.parse(url)).apply {
+                    setMimeType(mimeType)
+                    addRequestHeader("User-Agent", userAgent)
+                    CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
+                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                }
+                (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+                Toast.makeText(this, "Downloading $name…", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+
         b.webView.loadUrl("${Prefs.BASE_URL}/library")
     }
 
