@@ -109,10 +109,9 @@ export default function ReadPage() {
   if (status === "missing" || !data) {
     return (
       <main className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-6 text-center">
-        <h1 className="font-display text-2xl font-semibold text-ink">Note not available</h1>
+        <h1 className="font-display text-2xl font-semibold text-ink">Not available offline</h1>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          This note isn&rsquo;t on this device yet. Open it once while online and it&rsquo;ll be here
-          offline afterward.
+          Go online once to open this note — then it&rsquo;s saved for offline reading.
         </p>
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
