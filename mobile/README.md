@@ -55,10 +55,10 @@ and aggressive battery savers, exclude Verbatim from battery optimization in And
 ## Notes / caveats
 
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
-- The APK is ~115 MB because it bundles a Python + yt-dlp runtime for both ARM architectures
-  (arm64-v8a + armeabi-v7a). x86/x86_64 are omitted (emulators only).
-- This is v1: you paste the token manually. A later version can wire the web "Connect this device"
-  button straight into the service.
+- The APK is ~50 MB: it bundles a Python + yt-dlp runtime, built for 32-bit ARM (`armeabi-v7a`) only,
+  which installs on every ARM phone (32- and 64-bit). x86/x86_64 are omitted (emulators only).
+- **One-tap connect** is wired: inside the app, **Settings → Connect this device** mints a token and
+  hands it to the downloader over a JS bridge — no typing. (Manual token paste still works as a fallback.)
 
 ## Build locally (optional, if you do have a machine)
 

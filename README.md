@@ -35,7 +35,7 @@ Your phone  (Android app in mobile/, or the Termux helper in agent/)
 Modal  (GPU service, agent/modal_asr.py)
   3. App hands Modal a short-lived signed URL to that audio. Modal fetches it,
      transcribes + diarizes with MOSS-Transcribe-Diarize (long audio is split
-     into ~80-min chunks so any length works), and POSTs the speaker-labeled
+     into ~20-min chunks transcribed in parallel, so any length works — fast), and POSTs the speaker-labeled
      segments back, authenticated by an HMAC signature                        (app/api/notes/asr-callback)
 
 Web app
@@ -49,8 +49,9 @@ Web app
   gate), and auto-updates absorb YouTube changes. Modal never touches YouTube.
 - **Real speaker attribution** — captions have no speaker labels and many videos have none at all.
   Transcribing the audio with a diarizing model gives true turns, not inferred ones.
-- **Any length** — MOSS does a single pass up to ~90 min; longer audio is chunked and stitched back on
-  an absolute timeline, so a 5-hour video is just ~4 passes.
+- **Any length, fast** — longer audio is split into ~20-min chunks that transcribe **in parallel** on
+  separate GPU workers and stitch back on an absolute timeline, so even a multi-hour video finishes in
+  about the time of its single slowest chunk.
 - **Timeout-proof + cheap** — Vercel never handles YouTube or big audio; the GPU work is off on Modal;
   structuring the note is pure code.
 
@@ -65,6 +66,8 @@ Web app
 - **History** — every note is saved to your account library.
 - **On-demand export** — pick **PDF, DOCX, Markdown, or EPUB** per download; each is rendered
   server-side from the same structured note (no headless browser, so it runs on Vercel's free tier).
+- **Works offline** — the library and any note you've opened are cached on-device (service worker +
+  IndexedDB), so they read fully without a connection; only search and creating new notes need the network.
 - **Accounts + privacy** — Supabase Auth with Row-Level Security; users only ever see their own data.
 
 ## The phone helper
@@ -101,6 +104,8 @@ Create a project, then in the **SQL Editor** run the migrations in order:
   `awaiting_audio` / `transcribing` note statuses.
 - [`supabase/migrations/0003_storage.sql`](supabase/migrations/0003_storage.sql) — the private `audio`
   storage bucket the phone uploads to.
+- [`supabase/migrations/0004_audio_path.sql`](supabase/migrations/0004_audio_path.sql) — records the
+  uploaded audio's path so re-transcribing a video reuses the stored file instead of re-downloading it.
 
 Two keys are used: the **publishable (anon)** key for the browser app (RLS enforces access), and the
 **service-role** key server-side for the agent endpoints and the Modal callback (which have no browser
@@ -175,12 +180,14 @@ app/
     agent/jobs/[id]/error/       phone reports a failure → bounded retry
     diag/                        env-presence diagnostics
 lib/
-  youtube, asr-format, agent-auth, chunk, types, utils
+  youtube, asr-format, asr-kickoff, agent-auth, types, utils
   export/{markdown,docx,epub,pdf}
+  offline/db                     on-device (IndexedDB) store for offline reading
   supabase/{client,server,middleware,admin}
+public/sw.js                     service worker (offline app shell + cached pages)
 agent/                           Modal ASR app (modal_asr.py) + Termux helper (verbatim_agent.py)
 mobile/                          native Android phone-helper app (+ CI that builds the APK)
-supabase/migrations/             0001_init, 0002_agent, 0003_storage
+supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio_path
 ```
 
 ## Notes & limits
@@ -189,8 +196,8 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage
   they're accurate turns without guessing real names.
 - **The phone must be reachable** for a note to advance. If the app/helper isn't running, notes wait in
   **"Waiting for your phone"** until it is — nothing is lost.
-- **Very long videos** upload a large audio file to Supabase Storage (a few hundred MB for 5h); raise
-  the Storage global file-size limit if a big upload is rejected.
+- **Very long videos** upload a compressed audio file to Supabase Storage (16 kHz mono AAC, ~14 MB/hour
+  — a 5 h talk ≈ 70 MB); raise the Storage global file-size limit only if a very long upload is rejected.
 - **Android only** for the phone helper. iOS can't run yt-dlp and the App Store bans YouTube
   downloaders.
 - Free tiers are sized for limited users: Supabase (500 MB DB + 1 GB storage), YouTube API daily quota,
