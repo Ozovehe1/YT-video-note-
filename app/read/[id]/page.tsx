@@ -108,16 +108,10 @@ export default function ReadPage() {
   }
   if (status === "missing" || !data) {
     return (
-      <main className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-6 text-center">
-        <h1 className="font-display text-2xl font-semibold text-ink">Not available offline</h1>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          Go online once to open this note — then it&rsquo;s saved for offline reading.
-        </p>
+      <main className="mx-auto flex min-h-[50vh] max-w-xs flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-sm text-muted">Go online to open this note.</p>
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-        <a
-          href="/library"
-          className="mt-6 rounded-xl bg-oxblood px-4 py-2.5 text-sm font-semibold text-paper"
-        >
+        <a href="/library" className="text-sm font-medium text-oxblood">
           Back to library
         </a>
       </main>
