@@ -33,6 +33,7 @@ export function toPdfStream(note: Note, sections: NoteSection[]): PDFKit.PDFDocu
     info: { Title: note.title || "Untitled video", Author: note.channel || "Verbatim" },
   });
   const width = doc.page.width - MARGIN.left - MARGIN.right;
+  doc.lineGap(3); // a little more leading so stacked one-line turns don't read cramped
 
   const paintBg = () => {
     doc.save();
@@ -109,7 +110,7 @@ export function toPdfStream(note: Note, sections: NoteSection[]): PDFKit.PDFDocu
       } else {
         paragraph(runs);
       }
-      doc.moveDown(0.45);
+      doc.moveDown(0.55);
     });
   }
 
@@ -117,6 +118,9 @@ export function toPdfStream(note: Note, sections: NoteSection[]): PDFKit.PDFDocu
   const range = doc.bufferedPageRange();
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
+    // Footer sits below the text area; zero the bottom margin so writing there doesn't make
+    // pdfkit think it overflowed and tack on a blank page.
+    doc.page.margins.bottom = 0;
     const y = doc.page.height - 34;
     doc.font(HELV).fontSize(8).fillColor(MUTED);
     doc.text("Verbatim", MARGIN.left, y, { lineBreak: false });
