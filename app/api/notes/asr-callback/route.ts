@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
-import { kickModalAsr, originFrom, getAudioPath, setAudioPath } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, getAudioPath } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -122,22 +122,10 @@ export async function POST(request: Request) {
     })
     .eq("id", noteId);
 
-  // The audio was only needed for this one ASR pass — delete it from Storage so files don't
-  // pile up against the free quota. Removes both this note's own files (`<noteId>-…`) and the
-  // exact reused file recorded on the note (which may carry a different note's id prefix).
-  // Best-effort: never fail the callback if cleanup hiccups.
-  try {
-    const reused = await getAudioPath(admin, noteId);
-    const { data: files } = await admin.storage
-      .from("audio")
-      .list(note.user_id, { search: `${noteId}-` });
-    const paths = new Set((files ?? []).map((f) => `${note.user_id}/${f.name}`));
-    if (reused) paths.add(reused);
-    if (paths.size) await admin.storage.from("audio").remove([...paths]);
-  } catch {
-    /* leave the file; it can be cleaned up later */
-  }
-  await setAudioPath(admin, noteId, null); // best-effort; no-ops if the column is absent
+  // Keep the audio in Storage (and leave audio_path pointing at it) so re-transcribing this video —
+  // e.g. after a pipeline change — reuses the file instead of making the phone re-download it.
+  // findReusableAudio() matches it by video_id (or, without migration 0004, by the note-id file
+  // prefix). Storage is ~22 MB/note against the 1 GB free tier; the bucket can be cleared anytime.
 
   return NextResponse.json({ ok: true, sections: rows.length });
 }
