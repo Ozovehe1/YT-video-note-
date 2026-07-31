@@ -9,7 +9,7 @@
  *  - YouTube thumbnails: best-effort cache-first (opaque).
  *  - Everything else (Supabase / Modal / API mutations): untouched — straight to the network.
  */
-const VERSION = "v4";
+const VERSION = "v5";
 const STATIC_CACHE = `verbatim-static-${VERSION}`;
 const PAGE_CACHE = `verbatim-pages-${VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -18,7 +18,11 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(PAGE_CACHE)
-      .then((cache) => cache.addAll([OFFLINE_URL, "/library"]).catch(() => cache.add(OFFLINE_URL)))
+      .then((cache) =>
+        cache
+          .addAll([OFFLINE_URL, "/library", "/settings", "/new"])
+          .catch(() => cache.add(OFFLINE_URL)),
+      )
       .then(() => self.skipWaiting())
       .catch(() => self.skipWaiting()),
   );

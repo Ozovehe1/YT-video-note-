@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Reader } from "@/components/reader/reader";
 import { getCachedNote, cacheNote, DEFAULT_PROFILE, type CachedNote } from "@/lib/offline/db";
@@ -107,12 +106,13 @@ export default function ReadPage() {
           This note isn&rsquo;t on this device yet. Open it once while online and it&rsquo;ll be here
           offline afterward.
         </p>
-        <Link
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a
           href="/library"
           className="mt-6 rounded-xl bg-oxblood px-4 py-2.5 text-sm font-semibold text-paper"
         >
           Back to library
-        </Link>
+        </a>
       </main>
     );
   }

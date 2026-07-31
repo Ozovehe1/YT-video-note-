@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import Link from "next/link";
 import { Settings, LogOut, User, BookMarked, Plus } from "lucide-react";
 
 export function NavAccount({
@@ -42,28 +41,32 @@ export function NavAccount({
           </div>
           {/* Mobile-only: the inline Library/New note nav links are hidden < sm,
               so surface them here to keep navigation complete on phones. */}
-          <Link
+          {/* Hard links so the SW serves each route from cache offline. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a
             href="/library"
             onClick={() => setOpen(false)}
             className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-ink transition-colors hover:bg-panel sm:hidden"
           >
             <BookMarked className="h-4 w-4 text-muted" /> Library
-          </Link>
-          <Link
+          </a>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a
             href="/new"
             onClick={() => setOpen(false)}
             className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-ink transition-colors hover:bg-panel sm:hidden"
           >
             <Plus className="h-4 w-4 text-muted" /> New note
-          </Link>
+          </a>
           <div className="border-t border-hairline sm:hidden" />
-          <Link
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a
             href="/settings"
             onClick={() => setOpen(false)}
             className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-ink transition-colors hover:bg-panel"
           >
             <Settings className="h-4 w-4 text-muted" /> Settings
-          </Link>
+          </a>
           <form action={signOutAction}>
             <button
               type="submit"

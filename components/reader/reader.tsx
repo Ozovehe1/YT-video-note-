@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
@@ -164,12 +163,13 @@ export function Reader({
       {/* Reader top bar */}
       <div className="sticky top-16 z-20 border-b border-hairline bg-paper/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-3 px-5">
-          <Link
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a
             href="/library"
             className="flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-ink"
           >
             <ChevronLeft className="h-4 w-4" /> Library
-          </Link>
+          </a>
           <div className="flex items-center gap-1">
             <IconButton label="Contents" active={panel === "toc"} onClick={() => setPanel(panel === "toc" ? null : "toc")}>
               <List className="h-[1.05rem] w-[1.05rem]" />
@@ -528,12 +528,13 @@ function EmptyNote() {
       <p className="mt-2 text-sm text-muted">
         This note didn&rsquo;t capture any sections. Making it again usually fixes it.
       </p>
-      <Link
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+      <a
         href="/new"
         className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-oxblood px-5 py-2.5 text-sm font-semibold text-paper transition-transform hover:-translate-y-px"
       >
         Create a new note
-      </Link>
+      </a>
     </div>
   );
 }

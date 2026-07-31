@@ -72,11 +72,13 @@ export async function Nav() {
 
 function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <Link
+    // Hard navigation (full load) so the service worker serves the target from cache offline.
+    // eslint-disable-next-line @next/next/no-html-link-for-pages
+    <a
       href={href}
       className="hidden rounded-lg px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:text-ink sm:inline-block"
     >
       {children}
-    </Link>
+    </a>
   );
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
 import { Plus, BookMarked } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { NoteCard } from "@/components/note-card";
@@ -90,12 +89,13 @@ export default function LibraryPage() {
               : "Notes you make will live here."}
           </p>
         </div>
-        <Link
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a
           href="/new"
           className="inline-flex flex-none items-center gap-1.5 rounded-xl bg-oxblood px-4 py-2.5 text-sm font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
         >
           <Plus className="h-4 w-4" /> New note
-        </Link>
+        </a>
       </div>
 
       {list === null ? (
@@ -107,12 +107,13 @@ export default function LibraryPage() {
           <p className="mt-1.5 max-w-sm text-muted">
             Search a video by title or paste a link, and your first reading note will appear here.
           </p>
-          <Link
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a
             href="/new"
             className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-oxblood px-5 py-2.5 text-sm font-semibold text-paper"
           >
             <Plus className="h-4 w-4" /> Make your first note
-          </Link>
+          </a>
         </div>
       ) : (
         <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">

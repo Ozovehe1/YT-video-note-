@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MoreVertical, Trash2, Download, Loader2 } from "lucide-react";
 import type { Note } from "@/lib/types";
@@ -59,7 +58,8 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
 
   return (
     <div className="group relative flex flex-col overflow-hidden rounded-2xl border border-hairline bg-surface transition-shadow hover:shadow-soft">
-      <Link href={`/read/${note.id}`} className="block">
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+      <a href={`/read/${note.id}`} className="block">
         <div className="relative aspect-video w-full overflow-hidden bg-panel">
           {note.thumbnail && (
             // eslint-disable-next-line @next/next/no-img-element
@@ -76,15 +76,16 @@ export function NoteCard({ note, percent }: { note: Note; percent: number }) {
             </span>
           )}
         </div>
-      </Link>
+      </a>
 
       <div className="flex flex-1 flex-col p-4">
-        <Link href={`/read/${note.id}`} className="block">
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a href={`/read/${note.id}`} className="block">
           <h3 className="line-clamp-2 font-display text-[1.05rem] font-semibold leading-snug text-ink">
             {note.title || "Untitled video"}
           </h3>
           <p className="mt-1 truncate text-sm text-muted">{note.channel}</p>
-        </Link>
+        </a>
 
         <div className="mt-auto pt-3">
           {errored ? (

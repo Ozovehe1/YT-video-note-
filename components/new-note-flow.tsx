@@ -20,6 +20,20 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
   const [error, setError] = useState<string | null>(null);
   const startedRef = useRef(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [online, setOnline] = useState(true);
+
+  // Search and note creation need the network. Track connectivity so we show a friendly notice
+  // instead of a failed request when offline.
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
 
   const runSearch = useCallback(async (q: string) => {
     setError(null);
@@ -127,6 +141,26 @@ export function NewNoteFlow({ initialQuery = "" }: { initialQuery?: string }) {
     if (!q) return;
     if (looksLikeUrl(q)) createNote({ input: q });
     else runSearch(q);
+  }
+
+  if (!online) {
+    return (
+      <div className="mx-auto max-w-md text-center">
+        <span className="mx-auto inline-block h-12 w-12 rounded-2xl bg-oxblood" aria-hidden />
+        <h1 className="mt-6 font-display text-2xl font-semibold text-ink">You’re offline</h1>
+        <p className="mt-3 text-sm leading-relaxed text-muted">
+          Searching and adding new notes need a connection — they&rsquo;ll come back the moment
+          you&rsquo;re online. Notes you&rsquo;ve already made are still readable in your library.
+        </p>
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a
+          href="/library"
+          className="mt-6 inline-block rounded-xl bg-oxblood px-4 py-2.5 text-sm font-semibold text-paper transition-transform hover:-translate-y-px"
+        >
+          Open your library
+        </a>
+      </div>
+    );
   }
 
   if (phase === "creating") {
