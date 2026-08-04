@@ -1,20 +1,8 @@
 package com.verbatim.helper.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -24,13 +12,10 @@ import com.verbatim.helper.ui.library.LibraryScreen
 import com.verbatim.helper.ui.newnote.NewNoteScreen
 import com.verbatim.helper.ui.reader.ReaderScreen
 import com.verbatim.helper.ui.settings.SettingsScreen
-import com.verbatim.helper.ui.theme.MonoFamily
-import com.verbatim.helper.ui.theme.SansFamily
-import com.verbatim.helper.ui.theme.VerbatimTheme
 
 /**
- * App root: a NavHost gated by the Supabase session. Signed in → Library; otherwise → Auth. The
- * reader / new-note / settings destinations are stubs until Phases 4–5.
+ * App root: a NavHost gated by the Supabase session. Signed in → Library; otherwise → Auth.
+ * Activity-backed actions (connect device / export) reach screens through LocalAppActions.
  */
 @Composable
 fun VerbatimRoot() {
@@ -56,9 +41,7 @@ fun VerbatimRoot() {
         composable(Routes.NEW) {
             NewNoteScreen(
                 onBack = { nav.popBackStack() },
-                onCreated = { id ->
-                    nav.navigate(Routes.reader(id)) { popUpTo(Routes.LIBRARY) }
-                },
+                onCreated = { id -> nav.navigate(Routes.reader(id)) { popUpTo(Routes.LIBRARY) } },
             )
         }
         composable(Routes.SETTINGS) {
@@ -66,9 +49,7 @@ fun VerbatimRoot() {
             SettingsScreen(
                 onBack = { nav.popBackStack() },
                 onConnectPhone = actions.connectDevice,
-                onSignedOut = {
-                    nav.navigate(Routes.AUTH) { popUpTo(0) }
-                },
+                onSignedOut = { nav.navigate(Routes.AUTH) { popUpTo(0) } },
             )
         }
         composable(Routes.READER) { entry ->
@@ -77,27 +58,5 @@ fun VerbatimRoot() {
                 onBack = { nav.popBackStack() },
             )
         }
-    }
-}
-
-/** Temporary branded placeholder for destinations not yet built. */
-@Composable
-private fun Stub(title: String, subtitle: String) {
-    val colors = VerbatimTheme.colors
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(colors.paper)
-            .safeDrawingPadding()
-            .padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(title, fontFamily = SansFamily, fontSize = 20.sp, color = colors.ink)
-        Text(
-            subtitle,
-            fontFamily = MonoFamily, fontSize = 12.sp, color = colors.muted,
-            textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp),
-        )
     }
 }

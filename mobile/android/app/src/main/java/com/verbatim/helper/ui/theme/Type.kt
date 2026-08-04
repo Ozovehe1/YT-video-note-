@@ -2,24 +2,50 @@ package com.verbatim.helper.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.verbatim.helper.R
 
 /**
- * Verbatim's four type roles, mirroring the web app:
- *   display → Fraunces (headings/wordmark), read → Newsreader (long-form body),
- *   sans → Instrument Sans (UI/meta), mono → Fragment Mono (timestamps).
- *
- * Phase 1 maps these to the platform serif/sans/mono families so the build is self-contained
- * and offline-safe. Bundling the exact OFL .ttf files into res/font (a one-line swap here) is
- * the next fidelity pass — the rest of the UI references only these four vals, so nothing else
- * changes when we do.
+ * Verbatim's four type roles — the SAME faces the web app uses, now bundled as OFL fonts so the
+ * native app matches pixel-for-pixel and renders them offline on first launch:
+ *   display → Fraunces, read → Newsreader, sans → Instrument Sans, mono → Fragment Mono.
+ * Fraunces/Newsreader/Instrument Sans are variable fonts; weights are selected via FontVariation
+ * (API 26+, which is our minSdk).
  */
-val DisplayFamily = FontFamily.Serif   // → Fraunces
-val ReadFamily = FontFamily.Serif      // → Newsreader
-val SansFamily = FontFamily.SansSerif  // → Instrument Sans
-val MonoFamily = FontFamily.Monospace  // → Fragment Mono
+private fun v(resId: Int, weight: FontWeight, italic: Boolean = false) = Font(
+    resId = resId,
+    weight = weight,
+    style = if (italic) FontStyle.Italic else FontStyle.Normal,
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight)),
+)
+
+val DisplayFamily = FontFamily(
+    v(R.font.fraunces, FontWeight.Normal),
+    v(R.font.fraunces, FontWeight.Medium),
+    v(R.font.fraunces, FontWeight.SemiBold),
+    v(R.font.fraunces, FontWeight.Bold),
+)
+
+val ReadFamily = FontFamily(
+    v(R.font.newsreader, FontWeight.Normal),
+    v(R.font.newsreader, FontWeight.Medium),
+    v(R.font.newsreader, FontWeight.SemiBold),
+    v(R.font.newsreader_italic, FontWeight.Normal, italic = true),
+    v(R.font.newsreader_italic, FontWeight.Medium, italic = true),
+)
+
+val SansFamily = FontFamily(
+    v(R.font.instrument_sans, FontWeight.Normal),
+    v(R.font.instrument_sans, FontWeight.Medium),
+    v(R.font.instrument_sans, FontWeight.SemiBold),
+)
+
+val MonoFamily = FontFamily(Font(R.font.fragment_mono))
 
 /** Material3 type scale, retargeted onto Verbatim's families (sans for UI, serif for reading). */
 val VerbatimTypography = Typography(

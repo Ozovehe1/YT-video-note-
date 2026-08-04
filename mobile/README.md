@@ -1,17 +1,25 @@
-# Verbatim phone helper (Android app)
+# Verbatim (native Android app)
 
-A tiny Android app — the phone side of Verbatim. It does two things:
+A **real native Android app** (Jetpack Compose) — not a WebView over the website. It does two things:
 
-1. **Shows the live Verbatim web app** in a WebView (`https://yverbatim.vercel.app`) — you use it
-   exactly like the website: paste a link or search a video.
+1. **Is the full Verbatim app, natively.** Sign in, browse your library (offline-first from an
+   on-device Room cache), read notes in a premium reader (four themes, serif/sans, size, table of
+   contents, resume), change settings, create notes (search a title or paste a link), and export
+   (PDF/Word/EPUB/Markdown). The UI ships inside the APK, so it opens instantly and works offline
+   on first launch; only data comes from Supabase (RLS-scoped) and the app's API.
 2. **Runs a background downloader** (a foreground service). It polls the app for audio jobs,
    downloads the audio with [`youtubedl-android`](https://github.com/JunkFood02/youtubedl-android)
    (the yt-dlp engine Seal uses) from your phone's **residential IP** — which is what makes it
-   reliable — uploads the audio to Supabase Storage, and hands it back to the app for Modal to
-   transcribe.
+   reliable — uploads the audio to Supabase Storage, and hands it back for Modal to transcribe.
 
-The service talks to the app's agent API only
+The app talks to Supabase directly (auth + reads, with the session token) and to the app's own API
+for search / create / agent-token / export (authenticated by the same token via `Authorization:
+Bearer`). The downloader service uses the agent API
 (`/api/agent/jobs`, `/api/agent/jobs/{id}/uploaded`, `/api/agent/jobs/{id}/error`).
+
+**Stack:** Kotlin + Jetpack Compose (Material3 with a custom "Broadsheet" design system), Room
+(offline cache), OkHttp + kotlinx-serialization (Supabase REST + app API), Coil (thumbnails),
+bundled OFL fonts (Fraunces / Newsreader / Instrument Sans / Fragment Mono).
 
 ## Get the APK (no PC needed)
 
