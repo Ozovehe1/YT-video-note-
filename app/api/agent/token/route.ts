@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getAuth } from "@/lib/supabase/auth";
 import { generateAgentToken } from "@/lib/agent-auth";
 
 export const maxDuration = 30;
@@ -21,10 +22,7 @@ export async function GET() {
 
 /** Mint a new agent token. The plaintext is returned ONCE; only its hash is stored. */
 export async function POST(request: Request) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { supabase, user } = await getAuth(request);
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   let label = "helper";

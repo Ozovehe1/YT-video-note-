@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
+import { getAuth } from "@/lib/supabase/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
@@ -15,10 +15,7 @@ export const maxDuration = 60;
  * the diarized transcript back, which flips the note to `processing`.
  */
 export async function POST(request: Request) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { supabase, user } = await getAuth(request);
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   let body: { input?: string; videoId?: string };

@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
 import { searchVideos } from "@/lib/youtube";
-import { createClient } from "@/lib/supabase/server";
+import { getAuth } from "@/lib/supabase/auth";
 
 export async function GET(request: Request) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await getAuth(request);
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const params = new URL(request.url).searchParams;

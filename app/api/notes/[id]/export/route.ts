@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getAuth } from "@/lib/supabase/auth";
 import { toMarkdown } from "@/lib/export/markdown";
 import { toDocx } from "@/lib/export/docx";
 import { toEpub } from "@/lib/export/epub";
@@ -19,10 +19,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ error: "Unknown format." }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { supabase, user } = await getAuth(request);
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const { data: note } = await supabase.from("notes").select("*").eq("id", id).single();
