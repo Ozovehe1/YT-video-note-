@@ -2,9 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Fraunces, Newsreader, Instrument_Sans, Fragment_Mono } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/nav";
-import { SWRegister } from "@/components/sw-register";
-import { OfflineSync } from "@/components/offline-sync";
-import { createClient } from "@/lib/supabase/server";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -42,12 +39,7 @@ export const viewport: Viewport = {
   themeColor: "#4A0E14",
 };
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body
@@ -55,8 +47,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       >
         <Nav />
         {children}
-        <SWRegister />
-        <OfflineSync />
       </body>
     </html>
   );
