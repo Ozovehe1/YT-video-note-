@@ -414,3 +414,9 @@ def transcribe(payload: dict):
     # can't pickle an unhydrated global).
     modal.Function.from_name("verbatim-asr", "orchestrate").spawn(audio_url, note_id, callback_url)
     return {"ok": True}
+
+
+# Deploy the app when this file is run (e.g. pasted into a Modal Notebook cell and executed, or
+# `modal run`). Deploying is idempotent — re-running just updates the deployment in place.
+if __name__ == "__main__":
+    app.deploy()
