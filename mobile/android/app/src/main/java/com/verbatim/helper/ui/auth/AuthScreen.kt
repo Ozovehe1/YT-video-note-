@@ -136,9 +136,9 @@ fun AuthScreen(onSignedIn: () -> Unit, vm: AuthViewModel = viewModel()) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        if (vm.error != null) {
+        vm.error?.let { err ->
             Spacer(Modifier.height(12.dp))
-            Text(vm.error!!, color = colors.oxblood, fontFamily = SansFamily, fontSize = 13.sp, textAlign = TextAlign.Center)
+            Text(err, color = colors.oxblood, fontFamily = SansFamily, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
 
         Spacer(Modifier.height(20.dp))

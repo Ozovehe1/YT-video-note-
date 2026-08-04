@@ -14,7 +14,7 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 /** Entity <-> domain mapping. List fields (speakers, sections) are stored as JSON strings. */
-private val cacheJson = Json { ignoreUnknownKeys = true; isLenient = true }
+private val cacheJson = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 private val stringListSerializer = ListSerializer(String.serializer())
 private val sectionListSerializer = ListSerializer(SectionDto.serializer())
 

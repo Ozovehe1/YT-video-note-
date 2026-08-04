@@ -187,9 +187,9 @@ fun ReaderScreen(
                                 fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold,
                                 fontSize = 26.sp, lineHeight = 32.sp, color = colors.ink,
                             )
-                            if (!note?.channel.isNullOrBlank()) {
+                            note?.channel?.takeIf { it.isNotBlank() }?.let { channel ->
                                 Spacer(Modifier.height(6.dp))
-                                Text(note!!.channel, fontFamily = SansFamily, fontSize = 13.sp, color = colors.muted)
+                                Text(channel, fontFamily = SansFamily, fontSize = 13.sp, color = colors.muted)
                             }
                             Spacer(Modifier.height(10.dp))
                             Box(Modifier.width(40.dp).height(2.dp).background(colors.oxblood))
@@ -262,14 +262,15 @@ private fun SectionView(section: NoteSection, font: ReaderFont, fontSize: Int) {
 
         var prevSpeaker: String? = null
         section.content.forEach { block ->
-            val showSpeaker = !block.speaker.isNullOrBlank() && block.speaker != prevSpeaker
+            val speaker = block.speaker?.takeIf { it.isNotBlank() }
+            val showSpeaker = speaker != null && speaker != prevSpeaker
             prevSpeaker = block.speaker
             Column(Modifier.padding(bottom = 12.dp)) {
                 if (showSpeaker || block.timestamp != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (showSpeaker) {
+                        if (speaker != null && showSpeaker) {
                             Text(
-                                block.speaker!!,
+                                speaker,
                                 fontFamily = SansFamily, fontWeight = FontWeight.SemiBold,
                                 fontSize = 12.sp, color = colors.oxblood,
                             )

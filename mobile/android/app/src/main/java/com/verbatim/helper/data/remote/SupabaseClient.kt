@@ -26,7 +26,9 @@ class SupabaseClient(private val session: SessionStore) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    // coerceInputValues: a null (or unknown enum) for a field that HAS a default becomes the default
+    // instead of throwing — so one odd/null column in a real row can never crash a screen.
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
     private val jsonMedia = "application/json".toMediaType()
 
     // ---------------- auth ----------------

@@ -26,7 +26,7 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
     private val jsonMedia = "application/json".toMediaType()
 
     suspend fun search(query: String, pageToken: String? = null): SearchPage = withContext(Dispatchers.IO) {
