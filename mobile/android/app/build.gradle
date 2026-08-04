@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.serialization'
 }
 
 android {
@@ -97,6 +98,7 @@ dependencies {
     // --- Kotlin / Android core ---
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3'
 
     // --- Jetpack Compose (the native UI) ---
     def composeBom = platform('androidx.compose:compose-bom:2024.06.00')
