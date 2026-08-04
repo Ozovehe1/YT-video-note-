@@ -22,6 +22,7 @@ import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.ui.auth.AuthScreen
 import com.verbatim.helper.ui.library.LibraryScreen
 import com.verbatim.helper.ui.reader.ReaderScreen
+import com.verbatim.helper.ui.settings.SettingsScreen
 import com.verbatim.helper.ui.theme.MonoFamily
 import com.verbatim.helper.ui.theme.SansFamily
 import com.verbatim.helper.ui.theme.VerbatimTheme
@@ -52,7 +53,15 @@ fun VerbatimRoot() {
             )
         }
         composable(Routes.NEW) { Stub("New note", "Search / paste a link — coming in the next phase.") }
-        composable(Routes.SETTINGS) { Stub("Settings", "Themes, fonts, and Connect your phone — coming soon.") }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onConnectPhone = { /* wired to the downloader in the next step */ },
+                onSignedOut = {
+                    nav.navigate(Routes.AUTH) { popUpTo(0) }
+                },
+            )
+        }
         composable(Routes.READER) { entry ->
             ReaderScreen(
                 noteId = entry.arguments?.getString("id").orEmpty(),

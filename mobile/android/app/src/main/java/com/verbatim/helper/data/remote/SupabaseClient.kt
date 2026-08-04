@@ -138,6 +138,26 @@ class SupabaseClient(private val session: SessionStore) {
         return json.decodeFromString<List<ProfileDto>>(text).firstOrNull()?.toDomain()
     }
 
+    suspend fun updateProfile(theme: String, font: String, size: Int, width: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val token = bearer() ?: return@withContext false
+            val uid = session.userId ?: return@withContext false
+            try {
+                val body = json.encodeToString(ProfilePatch.serializer(), ProfilePatch(theme, font, size, width))
+                val req = Request.Builder()
+                    .url("${SupabaseConfig.REST}/profiles?id=eq.$uid")
+                    .header("apikey", SupabaseConfig.ANON_KEY)
+                    .header("Authorization", "Bearer $token")
+                    .header("Content-Type", "application/json")
+                    .header("Prefer", "return=minimal")
+                    .patch(body.toRequestBody(jsonMedia))
+                    .build()
+                http.newCall(req).execute().use { it.isSuccessful }
+            } catch (e: Exception) {
+                false
+            }
+        }
+
     suspend fun getProgress(noteId: String): ReadingProgress? {
         val text = get("reading_progress?note_id=eq.$noteId&select=note_id,last_section_index,percent&limit=1")
         return json.decodeFromString<List<ProgressDto>>(text).firstOrNull()?.toDomain()

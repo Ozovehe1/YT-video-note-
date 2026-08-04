@@ -94,6 +94,15 @@ class VerbatimRepository private constructor(context: Context) {
         runCatching { supabase.getProfile()?.let { dao.upsertProfile(it.toEntity()) } }
     }
 
+    /** Update the reader defaults: write the cache immediately, then the server best-effort. */
+    suspend fun updateProfile(theme: String, font: String, size: Int, width: String) {
+        val uid = session.userId ?: return
+        dao.upsertProfile(
+            com.verbatim.helper.data.local.ProfileEntity(uid, theme, font, size, width),
+        )
+        runCatching { supabase.updateProfile(theme, font, size, width) }
+    }
+
     companion object {
         @Volatile
         private var INSTANCE: VerbatimRepository? = null

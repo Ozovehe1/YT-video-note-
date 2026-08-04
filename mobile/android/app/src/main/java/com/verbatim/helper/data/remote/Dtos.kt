@@ -34,6 +34,14 @@ data class ProgressUpsert(
     val percent: Double,
 )
 
+@Serializable
+data class ProfilePatch(
+    val default_theme: String,
+    val font_family: String,
+    val font_size: Int,
+    val reading_width: String,
+)
+
 // --- responses ---
 
 @Serializable
