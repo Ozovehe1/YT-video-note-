@@ -5,45 +5,25 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.verbatim.helper.R
 
 /**
- * Verbatim's four type roles — the SAME faces the web app uses, now bundled as OFL fonts so the
- * native app matches pixel-for-pixel and renders them offline on first launch:
+ * Verbatim's four type roles — the SAME faces the web app uses, bundled as OFL fonts so the native
+ * app matches and renders them offline on first launch:
  *   display → Fraunces, read → Newsreader, sans → Instrument Sans, mono → Fragment Mono.
- * Fraunces/Newsreader/Instrument Sans are variable fonts; weights are selected via FontVariation
- * (API 26+, which is our minSdk).
+ * Fraunces / Newsreader / Instrument Sans ship as single variable-font files; Compose renders their
+ * default instance and synthesizes heavier weights, which keeps loading simple and robust.
  */
-private fun v(resId: Int, weight: FontWeight, italic: Boolean = false) = Font(
-    resId = resId,
-    weight = weight,
-    style = if (italic) FontStyle.Italic else FontStyle.Normal,
-    variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight)),
-)
-
-val DisplayFamily = FontFamily(
-    v(R.font.fraunces, FontWeight.Normal),
-    v(R.font.fraunces, FontWeight.Medium),
-    v(R.font.fraunces, FontWeight.SemiBold),
-    v(R.font.fraunces, FontWeight.Bold),
-)
+val DisplayFamily = FontFamily(Font(R.font.fraunces))
 
 val ReadFamily = FontFamily(
-    v(R.font.newsreader, FontWeight.Normal),
-    v(R.font.newsreader, FontWeight.Medium),
-    v(R.font.newsreader, FontWeight.SemiBold),
-    v(R.font.newsreader_italic, FontWeight.Normal, italic = true),
-    v(R.font.newsreader_italic, FontWeight.Medium, italic = true),
+    Font(R.font.newsreader),
+    Font(R.font.newsreader_italic, style = FontStyle.Italic),
 )
 
-val SansFamily = FontFamily(
-    v(R.font.instrument_sans, FontWeight.Normal),
-    v(R.font.instrument_sans, FontWeight.Medium),
-    v(R.font.instrument_sans, FontWeight.SemiBold),
-)
+val SansFamily = FontFamily(Font(R.font.instrument_sans))
 
 val MonoFamily = FontFamily(Font(R.font.fragment_mono))
 
