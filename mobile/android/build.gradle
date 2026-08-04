@@ -4,4 +4,6 @@ plugins {
     id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
     // Serialization for the Supabase REST DTOs (must match the Kotlin version).
     id 'org.jetbrains.kotlin.plugin.serialization' version '1.9.24' apply false
+    // KSP for Room's annotation processing (version is Kotlin-version + KSP-release).
+    id 'com.google.devtools.ksp' version '1.9.24-1.0.20' apply false
 }
