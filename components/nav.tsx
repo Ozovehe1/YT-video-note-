@@ -1,8 +1,9 @@
 import { Download } from "lucide-react";
 import { Brand } from "./brand";
 
-const APK_URL =
-  "https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk";
+// Served from our own origin (see app/download/route.ts) — a clean octet-stream download that
+// finalizes on phones, unlike the raw GitHub → S3 APK redirect which hangs Chrome at 100%.
+const APK_URL = "/download";
 
 /**
  * The website is now an info-only landing for the native Android app: brand + a download button.

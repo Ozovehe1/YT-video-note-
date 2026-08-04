@@ -19,7 +19,7 @@ export default function Home() {
           </p>
           <div className="mt-8">
             <a
-              href="https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk"
+              href="/download"
               className="inline-flex items-center gap-2 rounded-xl bg-oxblood px-6 py-3.5 font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
             >
               <Download className="h-5 w-5" /> Download for Android
@@ -126,7 +126,7 @@ export default function Home() {
           The Android app downloads the audio on your phone and reads anywhere — even offline.
         </p>
         <a
-          href="https://github.com/Ozovehe1/YT-video-note-/releases/download/android-latest/verbatim.apk"
+          href="/download"
           className="mt-8 inline-flex items-center gap-2 rounded-xl bg-oxblood px-6 py-3.5 font-semibold text-paper shadow-soft transition-transform hover:-translate-y-px"
         >
           <Download className="h-5 w-5" /> Download the latest app
