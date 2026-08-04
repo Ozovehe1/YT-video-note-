@@ -35,7 +35,8 @@ Your phone  (native Android app in mobile/)
 Modal  (GPU service, agent/modal_asr.py)
   3. App hands Modal a short-lived signed URL to that audio. Modal fetches it,
      transcribes + diarizes with MOSS-Transcribe-Diarize (long audio is split
-     into ~20-min chunks transcribed in parallel, so any length works — fast), and POSTs the speaker-labeled
+     into ~5-min chunks transcribed in parallel, then a voice-fingerprint pass
+     unifies each speaker's label across chunks, so any length works — fast), and POSTs the speaker-labeled
      segments back, authenticated by an HMAC signature                        (app/api/notes/asr-callback)
 
 Web app
@@ -49,9 +50,10 @@ Web app
   gate), and auto-updates absorb YouTube changes. Modal never touches YouTube.
 - **Real speaker attribution** — captions have no speaker labels and many videos have none at all.
   Transcribing the audio with a diarizing model gives true turns, not inferred ones.
-- **Any length, fast** — longer audio is split into ~20-min chunks that transcribe **in parallel** on
+- **Any length, fast** — longer audio is split into ~5-min chunks that transcribe **in parallel** on
   separate GPU workers and stitch back on an absolute timeline, so even a multi-hour video finishes in
-  about the time of its single slowest chunk.
+  about the time of its single slowest chunk. A voice-fingerprint pass (ECAPA-TDNN speaker embeddings,
+  clustered across the whole recording) then keeps each speaker's label consistent across every chunk.
 - **Timeout-proof + cheap** — Vercel never handles YouTube or big audio; the GPU work is off on Modal;
   structuring the note is pure code.
 

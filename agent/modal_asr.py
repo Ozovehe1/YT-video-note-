@@ -33,19 +33,29 @@ import urllib.request
 import modal
 
 MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-# Keep each MOSS pass to ~20 min of audio: the diarized, per-utterance output is token-heavy, so
-# an 80-min chunk exhausted MAX_NEW_TOKENS and truncated at ~29 min. 20 min ≈ 34k output tokens,
-# comfortably under the cap. Slices run in parallel, so more/smaller chunks is FASTER, not slower.
-CHUNK_SECONDS = 1200  # 20 min
+# Audio per MOSS pass. Slices run in PARALLEL (one GPU worker each), so wall-clock ≈ ONE slice's
+# time, not the sum — smaller slices = more workers = faster. At ~0.5× real-time on an L4, a 20-min
+# slice took ~10 min; 5-min slices target ~2–3 min each. A 2 h video → ~24 slices fanned out at once.
+# (Floor is set by GPU cold-start + your Modal GPU-concurrency limit, not the slice size — see
+# MAX_PARALLEL_WORKERS.) Still well under MAX_NEW_TOKENS, so no truncation.
+CHUNK_SECONDS = 300  # 5 min
 MAX_NEW_TOKENS = 50000  # per-chunk ceiling (generation stops at end-of-speech well before this)
+
+# Upper bound on GPU workers Modal may spin up at once for the parallel slices. Set high so a long
+# video fans ALL its slices out simultaneously (wall-clock ≈ one slice). The REAL ceiling is your
+# Modal plan's GPU-concurrency quota — Modal won't exceed it no matter what this says — so raising
+# your plan's limit is what actually buys more parallelism beyond a handful of workers.
+MAX_PARALLEL_WORKERS = 50
 
 # Speaker-fingerprint model for the cross-chunk unification stage. ECAPA-TDNN is the standard
 # speaker-embedding net (192-d); this checkpoint is NON-gated (no HF token) so it just downloads.
 EMBED_MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
 EMBED_SAVE_DIR = "/opt/ecapa"  # weights baked into the image at build time (see _download_embedder)
 SPEAKER_SAMPLE_SECONDS = 30  # per local speaker, how much of their own audio to average into one print
-# Cosine-distance cut for agglomerative clustering when there are 3+ speakers (panels). The common
-# 2-speaker dialogue case uses a threshold-free n_clusters=2 instead, so this only affects panels.
+# Cosine-distance cut for agglomerative clustering. Governs ALL multi-speaker cases (no fixed k, so
+# any number of speakers works). Below it two voice prints are the same person; above it, different
+# people. ~0.5 is a good ECAPA default; this is THE knob to tune if a real speaker gets split in two
+# (raise it) or two people get merged (lower it) — range ~0.4–0.7.
 CLUSTER_DISTANCE_THRESHOLD = 0.5
 
 # torch.compile is left OFF: it pays off only when a container is reused across many calls, but our
@@ -124,6 +134,7 @@ def _download(url: str, dest: str):
     secrets=[modal.Secret.from_name("tailscale")],
     timeout=14400,
     scaledown_window=120,
+    max_containers=MAX_PARALLEL_WORKERS,  # fan the parallel slices out as wide as the plan allows
 )
 class Pipeline:
     @modal.enter()
@@ -313,13 +324,11 @@ def _unify_speakers(results: list):
                 affinity="cosine", linkage="average",
             ).fit_predict(X)
 
-    if max_local == 2:
-        # The dialogue case: exactly two voices. Threshold-free k=2 — robust (uses every fingerprint
-        # jointly, so no per-boundary chain to cascade) and needs no tuning.
-        ids = _cluster(min(2, len(keys)), None)
-    else:
-        # Panels (3+): discover the count with a cosine-distance cut instead of assuming k.
-        ids = _cluster(None, CLUSTER_DISTANCE_THRESHOLD)
+    # Always DISCOVER the speaker count with a cosine-distance cut (no fixed k) so any number of
+    # speakers works — 2-person interviews, 4-person panels, a 6-person roundtable. Fingerprints are
+    # clustered jointly across the whole recording, so the same voice gets one global label wherever
+    # it appears and the count falls out of the data.
+    ids = _cluster(None, CLUSTER_DISTANCE_THRESHOLD)
 
     return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(len(keys))}
 
