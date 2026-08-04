@@ -52,11 +52,10 @@ MAX_PARALLEL_WORKERS = 50
 EMBED_MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
 EMBED_SAVE_DIR = "/opt/ecapa"  # weights baked into the image at build time (see _download_embedder)
 SPEAKER_SAMPLE_SECONDS = 30  # per local speaker, how much of their own audio to average into one print
-# Cosine-distance cut for agglomerative clustering. Governs ALL multi-speaker cases (no fixed k, so
-# any number of speakers works). Below it two voice prints are the same person; above it, different
-# people. ~0.5 is a good ECAPA default; this is THE knob to tune if a real speaker gets split in two
-# (raise it) or two people get merged (lower it) — range ~0.4–0.7.
-CLUSTER_DISTANCE_THRESHOLD = 0.5
+# The speaker count is chosen AUTOMATICALLY (silhouette analysis over candidate counts — see
+# _unify_speakers), so there is no distance threshold to hand-tune. MAX_SPEAKERS only bounds the
+# search so it stays cheap; it is not a tuning knob (a real note rarely has more distinct voices).
+MAX_SPEAKERS = 12
 
 # torch.compile is left OFF: it pays off only when a container is reused across many calls, but our
 # slices fan out to fresh one-shot workers, so per-worker compile warmup would OUTWEIGH the gain.
@@ -292,6 +291,7 @@ def _unify_speakers(results: list):
     """
     import numpy as np
     from sklearn.cluster import AgglomerativeClustering
+    from sklearn.metrics import silhouette_score
 
     keys, vecs = [], []
     for r in results:
@@ -299,38 +299,48 @@ def _unify_speakers(results: list):
             if vec:
                 keys.append((r["chunk"], str(local)))
                 vecs.append(vec)
-    if len(keys) < 2:
+    n = len(keys)
+    if n < 2:
         return None  # 0–1 distinct fingerprints → nothing to align (monologue / single chunk)
 
-    # How many speakers does any single chunk contain? MOSS's per-chunk count is the reliable signal.
+    # MOSS's within-chunk diarization is the trustworthy speaker DETECTOR: the most speakers it found
+    # in any single chunk is a hard lower bound on the global count (and the whole monologue test — if
+    # no chunk ever had 2 voices, it's one speaker and raw labels already collapse to one).
     max_local = max((len(r.get("embeddings") or {}) for r in results), default=0)
     if max_local <= 1:
-        return None  # every chunk is single-speaker → a monologue; raw labels already collapse to one
+        return None
 
     X = np.asarray(vecs, dtype=float)
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     X = X / norms
 
-    def _cluster(n_clusters, distance_threshold):
+    def _fit(k):
         try:
-            return AgglomerativeClustering(
-                n_clusters=n_clusters, distance_threshold=distance_threshold,
-                metric="cosine", linkage="average",
-            ).fit_predict(X)
+            return AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average").fit_predict(X)
         except TypeError:  # older scikit-learn used `affinity=` instead of `metric=`
-            return AgglomerativeClustering(
-                n_clusters=n_clusters, distance_threshold=distance_threshold,
-                affinity="cosine", linkage="average",
-            ).fit_predict(X)
+            return AgglomerativeClustering(n_clusters=k, affinity="cosine", linkage="average").fit_predict(X)
 
-    # Always DISCOVER the speaker count with a cosine-distance cut (no fixed k) so any number of
-    # speakers works — 2-person interviews, 4-person panels, a 6-person roundtable. Fingerprints are
-    # clustered jointly across the whole recording, so the same voice gets one global label wherever
-    # it appears and the count falls out of the data.
-    ids = _cluster(None, CLUSTER_DISTANCE_THRESHOLD)
+    # Choose the speaker count AUTOMATICALLY instead of via a hand-tuned distance threshold. Search
+    # candidate counts from MOSS's lower bound up to MAX_SPEAKERS and keep the one whose clusters are
+    # cleanest (highest silhouette — tightest within-speaker, widest between-speaker). This self-
+    # calibrates to each recording: 2 for an interview, 4 for a panel, etc., with nothing to tune.
+    lo = max(2, max_local)
+    hi = min(MAX_SPEAKERS, n)
+    if lo >= hi:
+        ids = _fit(lo)  # count is pinned (e.g. only `lo` fingerprints, or MOSS already saw the max)
+    else:
+        best_ids, best_score = None, -1.0
+        for k in range(lo, hi + 1):
+            labels = _fit(k)
+            if len(set(labels)) < 2 or k > n - 1:
+                continue  # silhouette needs 2..n-1 distinct clusters
+            score = silhouette_score(X, labels, metric="cosine")
+            if score > best_score:
+                best_score, best_ids = score, labels
+        ids = best_ids if best_ids is not None else _fit(lo)
 
-    return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(len(keys))}
+    return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(n)}
 
 
 @app.function(image=cpu_image, secrets=[modal.Secret.from_name("tailscale")], timeout=14400)
