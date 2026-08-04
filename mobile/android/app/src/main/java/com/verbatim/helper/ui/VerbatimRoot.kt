@@ -62,9 +62,10 @@ fun VerbatimRoot() {
             )
         }
         composable(Routes.SETTINGS) {
+            val actions = LocalAppActions.current
             SettingsScreen(
                 onBack = { nav.popBackStack() },
-                onConnectPhone = { /* wired to the downloader in the next step */ },
+                onConnectPhone = actions.connectDevice,
                 onSignedOut = {
                     nav.navigate(Routes.AUTH) { popUpTo(0) }
                 },

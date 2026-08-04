@@ -21,9 +21,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,8 +81,10 @@ fun ReaderScreen(
         val colors = VerbatimTheme.colors
         val listState = rememberLazyListState()
         val scope = rememberCoroutineScope()
+        val actions = com.verbatim.helper.ui.LocalAppActions.current
         var showToc by remember { mutableStateOf(false) }
         var showControls by remember { mutableStateOf(false) }
+        var showExport by remember { mutableStateOf(false) }
         var resumed by remember { mutableStateOf(false) }
 
         val sections = vm.sections
@@ -123,6 +128,20 @@ fun ReaderScreen(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
                 }
                 Spacer(Modifier.weight(1f))
+                Box {
+                    IconButton(onClick = { showExport = true }) {
+                        Icon(Icons.Filled.Download, contentDescription = "Export", tint = colors.muted)
+                    }
+                    DropdownMenu(expanded = showExport, onDismissRequest = { showExport = false }) {
+                        listOf("pdf" to "PDF", "docx" to "Word", "epub" to "EPUB", "markdown" to "Markdown")
+                            .forEach { (fmt, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = { showExport = false; actions.exportNote(noteId, fmt) },
+                                )
+                            }
+                    }
+                }
                 IconButton(onClick = { showToc = true }) {
                     Icon(Icons.Filled.List, contentDescription = "Contents", tint = colors.muted)
                 }

@@ -33,6 +33,9 @@ class VerbatimRepository private constructor(context: Context) {
     suspend fun createNote(input: String) = api.createNote(input)
     suspend fun mintAgentToken() = api.mintAgentToken()
 
+    /** A valid access token for authenticating a system DownloadManager export request. */
+    suspend fun accessToken(): String? = supabase.validToken()
+
     val isSignedIn: Boolean get() = session.isSignedIn
     val userId: String? get() = session.userId
 
