@@ -20,8 +20,9 @@ android {
 
     defaultConfig {
         applicationId "com.verbatim.helper"
-        // youtubedl-android requires minSdk 24.
-        minSdk 24
+        // youtubedl-android needs 24; supabase-kt needs 26 → 26 satisfies both. The target
+        // device (Infinix Smart 9, Android 14 Go) is far newer, so nothing real is lost.
+        minSdk 26
         targetSdk 34
         // Version comes from CI (the run number) so each build is a proper, increasing update;
         // falls back to 1 for local builds.
@@ -32,16 +33,18 @@ android {
         // ARM Android phone: 32-bit devices run it natively, and 64-bit devices run
         // 32-bit apps in compat mode. The target device (Infinix Smart 9, X6532, Android
         // 14 Go edition) runs a 32-bit OS on a 64-bit-capable chip, so a 64-bit-only APK
-        // was rejected as "not compatible". ~50 MB vs ~99 MB (dual) / ~205 MB (universal).
-        // Trade-off: 64-bit phones run the helper in 32-bit mode, which is fine for a
-        // lightweight background downloader.
+        // was rejected as "not compatible".
         ndk {
             abiFilters 'armeabi-v7a'
         }
     }
 
     buildFeatures {
-        viewBinding true
+        compose true
+    }
+    composeOptions {
+        // Pairs with Kotlin 1.9.24 (see root build.gradle).
+        kotlinCompilerExtensionVersion '1.5.14'
     }
 
     compileOptions {
@@ -72,7 +75,9 @@ android {
                 'META-INF/NOTICE',
                 'META-INF/NOTICE.md',
                 'META-INF/NOTICE.txt',
-                'META-INF/*.kotlin_module'
+                'META-INF/*.kotlin_module',
+                'META-INF/INDEX.LIST',
+                'META-INF/io.netty.versions.properties'
             ]
         }
         // The Python interpreter dlopen's its libs from the extracted path.
@@ -83,13 +88,28 @@ android {
 }
 
 dependencies {
+    // --- phone-side downloader (unchanged) ---
     def ytdl = "0.18.1"
     implementation "io.github.junkfood02.youtubedl-android:library:$ytdl"
     implementation "io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl"
-
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.core:core-ktx:1.13.1'
-    implementation 'com.google.android.material:material:1.12.0'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // --- Kotlin / Android core ---
+    implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+
+    // --- Jetpack Compose (the native UI) ---
+    def composeBom = platform('androidx.compose:compose-bom:2024.06.00')
+    implementation composeBom
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+    implementation 'androidx.activity:activity-compose:1.9.1'
+    implementation 'androidx.navigation:navigation-compose:2.7.7'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4'
+    implementation 'io.coil-kt:coil-compose:2.6.0'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
 }
