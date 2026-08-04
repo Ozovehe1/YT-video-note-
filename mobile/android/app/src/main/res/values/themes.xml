@@ -2,7 +2,7 @@
 <resources>
     <!-- Launch/window theme. The Compose UI paints everything above this; the window background
          is set to Paper so the very first frame (before Compose composes) is on-brand, not white. -->
-    <style name="Theme.Verbatim" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.Verbatim" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">#F7F2E7</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
