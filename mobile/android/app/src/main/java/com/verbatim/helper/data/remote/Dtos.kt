@@ -75,8 +75,10 @@ data class ProfilePatch(
 
 @Serializable
 data class SessionResponse(
-    @SerialName("access_token") val accessToken: String,
-    @SerialName("refresh_token") val refreshToken: String,
+    // Nullable: a sign-up when email confirmation is ON returns the user WITHOUT a session
+    // (no tokens) until the email is confirmed, so these must be optional to parse that response.
+    @SerialName("access_token") val accessToken: String? = null,
+    @SerialName("refresh_token") val refreshToken: String? = null,
     @SerialName("expires_in") val expiresIn: Long = 3600,
     val user: UserDto? = null,
 )

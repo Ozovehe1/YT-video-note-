@@ -58,15 +58,35 @@ class SupabaseClient(private val session: SessionStore) {
                         return@withContext Result.failure(Exception(msg))
                     }
                     val s = json.decodeFromString<SessionResponse>(text)
+                    val access = s.accessToken
+                    val refresh = s.refreshToken
+                    if (access == null || refresh == null) {
+                        // Server accepted the sign-up but returned no session → email confirmation
+                        // is enabled. The account exists; the user just needs to confirm it.
+                        return@withContext Result.failure(
+                            Exception("Account created. Check your email to confirm it, then sign in."),
+                        )
+                    }
                     val uid = s.user?.id
-                        ?: return@withContext Result.failure(Exception("Check your email to confirm your account, then sign in."))
-                    session.save(s.accessToken, s.refreshToken, uid, s.expiresIn)
+                        ?: return@withContext Result.failure(Exception("Signed in, but no account id came back."))
+                    session.save(access, refresh, uid, s.expiresIn)
                     Result.success(Unit)
                 }
             } catch (e: Exception) {
-                Result.failure(e)
+                Result.failure(Exception(friendlyError(e)))
             }
         }
+
+    /** Turn low-level network exceptions into human-readable messages for the UI. */
+    private fun friendlyError(e: Throwable): String = when (e) {
+        is java.net.UnknownHostException ->
+            "Couldn't reach the server. Check your internet connection and try again."
+        is java.net.SocketTimeoutException ->
+            "The server took too long to respond. Check your connection and try again."
+        is java.io.IOException ->
+            "Network problem. Check your connection and try again."
+        else -> e.message ?: "Something went wrong. Please try again."
+    }
 
     fun signOut() = session.clear()
 
@@ -93,9 +113,10 @@ class SupabaseClient(private val session: SessionStore) {
             http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val s = json.decodeFromString<SessionResponse>(resp.body?.string().orEmpty())
+                val access = s.accessToken ?: return@withContext null
                 val uid = s.user?.id ?: session.userId ?: return@withContext null
-                session.save(s.accessToken, s.refreshToken, uid, s.expiresIn)
-                s.accessToken
+                session.save(access, s.refreshToken ?: rt, uid, s.expiresIn)
+                access
             }
         } catch (e: Exception) {
             null
