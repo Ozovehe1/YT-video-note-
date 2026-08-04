@@ -9,6 +9,15 @@
 # single MOSS pass never runs out of output/context budget and truncates (an 80-min chunk
 # used to die at ~29 min, dropping ~51 min of a 96-min video).
 #
+# MOSS diarizes each slice INDEPENDENTLY, so its SPEAKER_00/01 labels are only local to a slice
+# and collide across slices (the guest is SPEAKER_00 in one chunk, SPEAKER_01 in the next), which
+# made the reader's "Speaker 1/2" flip mid-document. To fix it we add the standard second stage
+# every long-audio diarizer uses (pyannote / WhisperX / DiariZen): each GPU worker also computes a
+# voice fingerprint (ECAPA-TDNN speaker embedding) per local speaker, and the orchestrator clusters
+# those fingerprints across the whole recording so the same voice gets ONE global label everywhere.
+# This assumes nothing about turn order — it compares voices — so it survives pauses, backchannels
+# and a cut landing mid-turn (where a naive chunk-to-chunk chain would flip and cascade).
+#
 # One Modal secret named `tailscale` supplies ASR_WEBHOOK_SECRET (same value as the app env).
 # The name is legacy; only ASR_WEBHOOK_SECRET is read. Deploy from a Modal Notebook by adding
 # `app.deploy()`. Endpoint URL https://<workspace>--verbatim-asr-transcribe.modal.run is stable.
@@ -30,6 +39,15 @@ MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 CHUNK_SECONDS = 1200  # 20 min
 MAX_NEW_TOKENS = 50000  # per-chunk ceiling (generation stops at end-of-speech well before this)
 
+# Speaker-fingerprint model for the cross-chunk unification stage. ECAPA-TDNN is the standard
+# speaker-embedding net (192-d); this checkpoint is NON-gated (no HF token) so it just downloads.
+EMBED_MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
+EMBED_SAVE_DIR = "/opt/ecapa"  # weights baked into the image at build time (see _download_embedder)
+SPEAKER_SAMPLE_SECONDS = 30  # per local speaker, how much of their own audio to average into one print
+# Cosine-distance cut for agglomerative clustering when there are 3+ speakers (panels). The common
+# 2-speaker dialogue case uses a threshold-free n_clusters=2 instead, so this only affects panels.
+CLUSTER_DISTANCE_THRESHOLD = 0.5
+
 # torch.compile is left OFF: it pays off only when a container is reused across many calls, but our
 # slices fan out to fresh one-shot workers, so per-worker compile warmup would OUTWEIGH the gain.
 # Flip to True if we ever move to a warm container pool.
@@ -42,6 +60,16 @@ def _download_model():
     snapshot_download(MODEL_ID)
 
 
+def _download_embedder():
+    # Instantiate the ECAPA speaker-embedding model once at build time so its weights are baked into
+    # the image (savedir=EMBED_SAVE_DIR) and no download happens on the hot path.
+    try:
+        from speechbrain.inference.speaker import EncoderClassifier
+    except Exception:
+        from speechbrain.pretrained import EncoderClassifier
+    EncoderClassifier.from_hparams(source=EMBED_MODEL_ID, savedir=EMBED_SAVE_DIR)
+
+
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg", "git")
@@ -50,16 +78,18 @@ image = (
         "git clone https://github.com/OpenMOSS/MOSS-Transcribe-Diarize.git /opt/moss",
         "cd /opt/moss && pip install -e .",
     )
-    .pip_install("fastapi[standard]", "huggingface_hub", "requests")
+    .pip_install("fastapi[standard]", "huggingface_hub", "requests", "speechbrain")
     .run_function(_download_model)
+    .run_function(_download_embedder)
 )
 
-# The trigger endpoint + orchestrator do no GPU work (download / probe / fan-out / HTTP), so they
-# run on a tiny CPU image that cold-starts fast. fastapi is required for @modal.fastapi_endpoint.
+# The trigger endpoint + orchestrator do no GPU work (download / probe / fan-out / cluster / HTTP),
+# so they run on a tiny CPU image that cold-starts fast. fastapi is required for
+# @modal.fastapi_endpoint; numpy + scikit-learn drive the global speaker-clustering stage.
 cpu_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
-    .pip_install("fastapi[standard]")
+    .pip_install("fastapi[standard]", "numpy", "scikit-learn")
 )
 
 app = modal.App("verbatim-asr")
@@ -129,6 +159,20 @@ class Pipeline:
                 pass
         self.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 
+        # Speaker-embedding model for cross-chunk unification. Best-effort: if it fails to load, we
+        # simply skip fingerprinting and fall back to raw per-chunk labels (never breaks the run).
+        try:
+            try:
+                from speechbrain.inference.speaker import EncoderClassifier
+            except Exception:
+                from speechbrain.pretrained import EncoderClassifier
+            self.embedder = EncoderClassifier.from_hparams(
+                source=EMBED_MODEL_ID, savedir=EMBED_SAVE_DIR,
+                run_opts={"device": str(self.device)},
+            )
+        except Exception:
+            self.embedder = None
+
     def _transcribe(self, audio_path: str):
         from moss_transcribe_diarize import parse_transcript
         from moss_transcribe_diarize.inference_utils import (
@@ -152,10 +196,54 @@ class Pipeline:
             for s in parse_transcript(result["text"])
         ]
 
+    def _embed_speakers(self, wav_path: str, segs: list):
+        # One voice fingerprint per LOCAL speaker in this slice: gather up to SPEAKER_SAMPLE_SECONDS
+        # of that speaker's own audio (using the slice-local segment times) and ECAPA-embed it into a
+        # single L2-normalized 192-d vector. Returns {local_label: [floats]}. Best-effort — any
+        # failure returns {} and the run falls back to raw labels.
+        if getattr(self, "embedder", None) is None:
+            return {}
+        import torch
+        import torchaudio
+
+        wav, sr = torchaudio.load(wav_path)
+        if wav.dim() > 1:
+            wav = wav.mean(dim=0)  # → mono [samples]
+        total = wav.shape[-1]
+        max_samples = int(SPEAKER_SAMPLE_SECONDS * sr)
+        buckets: dict[str, list] = {}
+        for s in segs:
+            spk = str(s["speaker"])
+            start = float(s.get("start") or 0.0)
+            end = s.get("end")
+            end = float(end) if end is not None and float(end) > start else start + 3.0
+            a, b = max(0, int(start * sr)), min(total, int(end * sr))
+            if b <= a:
+                continue
+            have = sum(int(p.shape[-1]) for p in buckets.get(spk, []))
+            if have >= max_samples:
+                continue
+            buckets.setdefault(spk, []).append(wav[a:b])
+        out: dict[str, list] = {}
+        for spk, parts in buckets.items():
+            clip = torch.cat(parts)[:max_samples]
+            if clip.numel() < int(0.2 * sr):  # < 0.2 s of audio — too little to fingerprint reliably
+                continue
+            with torch.no_grad():
+                emb = self.embedder.encode_batch(clip.unsqueeze(0).to(self.device))
+            v = emb.reshape(-1).detach().cpu().float()
+            n = torch.linalg.norm(v)
+            if n > 0:
+                v = v / n
+            out[spk] = v.tolist()
+        return out
+
     @modal.method()
-    def transcribe_slice(self, audio_url: str, offset: int, dur: int):
-        # Download the audio, cut just [offset, offset+dur] to 16 kHz mono, transcribe, and shift
-        # every timestamp back onto the absolute timeline. Runs on its own GPU worker (parallel).
+    def transcribe_slice(self, audio_url: str, offset: int, dur: int, chunk_i: int):
+        # Download the audio, cut just [offset, offset+dur] to 16 kHz mono, transcribe, fingerprint
+        # each local speaker, then shift every timestamp back onto the absolute timeline. Runs on its
+        # own GPU worker (parallel). Returns {chunk, segments, embeddings} — the orchestrator uses the
+        # embeddings to give each voice ONE global label across all chunks.
         with tempfile.TemporaryDirectory() as tmp:
             raw = os.path.join(tmp, "in")
             _download(audio_url, raw)
@@ -166,15 +254,74 @@ class Pipeline:
                 check=True, capture_output=True,
             )
             if not os.path.exists(wav) or os.path.getsize(wav) < 1024:
-                return []  # slice past the end of the audio → nothing to transcribe
+                return {"chunk": chunk_i, "segments": [], "embeddings": {}}  # past end of audio
             segs = self._transcribe(wav)
+            # Fingerprint BEFORE shifting, while segment times are still slice-local (match the wav).
+            try:
+                embeddings = self._embed_speakers(wav, segs)
+            except Exception:
+                embeddings = {}
         out = []
         for s in segs:
             s["start"] = (s["start"] or 0.0) + offset
             if s.get("end") is not None:
                 s["end"] = s["end"] + offset
+            s["chunk"] = chunk_i
             out.append(s)
-        return out
+        return {"chunk": chunk_i, "segments": out, "embeddings": embeddings}
+
+
+def _unify_speakers(results: list):
+    """
+    Cross-chunk speaker unification (the second stage). `results` is the per-slice
+    {chunk, segments, embeddings} list. Cluster every (chunk, local-speaker) voice fingerprint into
+    global identities so the same voice is one label everywhere. Returns a map
+    {(chunk_i, local_label): "SPEAKER_NN"}, or None to leave labels untouched (monologue, or not
+    enough fingerprints to unify — in which case raw labels already behave correctly).
+    """
+    import numpy as np
+    from sklearn.cluster import AgglomerativeClustering
+
+    keys, vecs = [], []
+    for r in results:
+        for local, vec in (r.get("embeddings") or {}).items():
+            if vec:
+                keys.append((r["chunk"], str(local)))
+                vecs.append(vec)
+    if len(keys) < 2:
+        return None  # 0–1 distinct fingerprints → nothing to align (monologue / single chunk)
+
+    # How many speakers does any single chunk contain? MOSS's per-chunk count is the reliable signal.
+    max_local = max((len(r.get("embeddings") or {}) for r in results), default=0)
+    if max_local <= 1:
+        return None  # every chunk is single-speaker → a monologue; raw labels already collapse to one
+
+    X = np.asarray(vecs, dtype=float)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X = X / norms
+
+    def _cluster(n_clusters, distance_threshold):
+        try:
+            return AgglomerativeClustering(
+                n_clusters=n_clusters, distance_threshold=distance_threshold,
+                metric="cosine", linkage="average",
+            ).fit_predict(X)
+        except TypeError:  # older scikit-learn used `affinity=` instead of `metric=`
+            return AgglomerativeClustering(
+                n_clusters=n_clusters, distance_threshold=distance_threshold,
+                affinity="cosine", linkage="average",
+            ).fit_predict(X)
+
+    if max_local == 2:
+        # The dialogue case: exactly two voices. Threshold-free k=2 — robust (uses every fingerprint
+        # jointly, so no per-boundary chain to cascade) and needs no tuning.
+        ids = _cluster(min(2, len(keys)), None)
+    else:
+        # Panels (3+): discover the count with a cosine-distance cut instead of assuming k.
+        ids = _cluster(None, CLUSTER_DISTANCE_THRESHOLD)
+
+    return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(len(keys))}
 
 
 @app.function(image=cpu_image, secrets=[modal.Secret.from_name("tailscale")], timeout=14400)
@@ -195,15 +342,30 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
             raise RuntimeError("could not determine audio duration")
 
         n = max(1, math.ceil(duration / CHUNK_SECONDS))
-        args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS) for i in range(n)]
+        args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS, i) for i in range(n)]
 
         # Look the class up by name at call-time (same reason as the endpoint below): a serialized
         # Notebook deploy can't pickle an unhydrated Cls global. .starmap fans the slices out across
-        # parallel GPU workers, unpacking each (audio_url, offset, dur) tuple as positional args.
+        # parallel GPU workers, unpacking each (audio_url, offset, dur, chunk_i) tuple positionally.
+        # Each result is {chunk, segments, embeddings}.
         pipeline = modal.Cls.from_name("verbatim-asr", "Pipeline")()
+        results = list(pipeline.transcribe_slice.starmap(args))
+
+        # Unify speaker labels across chunks by voice fingerprint. Best-effort: on any failure keep the
+        # raw per-chunk labels (today's behavior) so the note still completes.
+        labelmap = None
+        try:
+            labelmap = _unify_speakers(results)
+        except Exception:
+            labelmap = None
+
         segments = []
-        for part in pipeline.transcribe_slice.starmap(args):
-            segments.extend(part)
+        for r in results:
+            for s in r.get("segments") or []:
+                if labelmap is not None:
+                    s["speaker"] = labelmap.get((r["chunk"], str(s["speaker"])), s["speaker"])
+                s.pop("chunk", None)  # internal namespacing key — not part of the callback contract
+                segments.append(s)
         if not segments:
             raise RuntimeError("No speech found in the audio")
         segments.sort(key=lambda s: s.get("start") or 0.0)
