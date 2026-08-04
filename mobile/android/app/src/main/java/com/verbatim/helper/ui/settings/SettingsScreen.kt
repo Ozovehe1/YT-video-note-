@@ -71,10 +71,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repo.updateProfile(theme.id, font.id, size, width.id) }
     }
 
-    fun setTheme(t: ReaderTheme) { theme = t; persist() }
-    fun setFont(f: ReaderFont) { font = f; persist() }
-    fun setSize(s: Int) { size = s; persist() }
-    fun setWidth(w: ReadingWidth) { width = w; persist() }
+    fun chooseTheme(t: ReaderTheme) { theme = t; persist() }
+    fun chooseFont(f: ReaderFont) { font = f; persist() }
+    fun chooseSize(s: Int) { size = s; persist() }
+    fun chooseWidth(w: ReadingWidth) { width = w; persist() }
 
     fun signOut(onDone: () -> Unit) {
         viewModelScope.launch { repo.signOut(); onDone() }
@@ -116,22 +116,22 @@ fun SettingsScreen(
             Label("Theme")
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 ReaderTheme.entries.forEach { t ->
-                    Chip(t.label.take(6), vm.theme == t, Modifier.weight(1f)) { vm.setTheme(t) }
+                    Chip(t.label.take(6), vm.theme == t, Modifier.weight(1f)) { vm.chooseTheme(t) }
                 }
             }
 
             Spacer(Modifier.height(18.dp))
             Label("Typeface")
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                TypeChip("Serif", ReadFamily, vm.font == ReaderFont.READ, Modifier.weight(1f)) { vm.setFont(ReaderFont.READ) }
-                TypeChip("Sans", SansFamily, vm.font == ReaderFont.SANS, Modifier.weight(1f)) { vm.setFont(ReaderFont.SANS) }
+                TypeChip("Serif", ReadFamily, vm.font == ReaderFont.READ, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.READ) }
+                TypeChip("Sans", SansFamily, vm.font == ReaderFont.SANS, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.SANS) }
             }
 
             Spacer(Modifier.height(18.dp))
             Label("Size · ${vm.size}sp")
             Slider(
                 value = vm.size.toFloat(),
-                onValueChange = { vm.setSize(it.toInt()) },
+                onValueChange = { vm.chooseSize(it.toInt()) },
                 valueRange = 14f..26f,
                 steps = 11,
                 colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
@@ -141,7 +141,7 @@ fun SettingsScreen(
             Label("Reading width")
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 ReadingWidth.entries.forEach { w ->
-                    Chip(w.id.replaceFirstChar { it.uppercase() }, vm.width == w, Modifier.weight(1f)) { vm.setWidth(w) }
+                    Chip(w.id.replaceFirstChar { it.uppercase() }, vm.width == w, Modifier.weight(1f)) { vm.chooseWidth(w) }
                 }
             }
 
