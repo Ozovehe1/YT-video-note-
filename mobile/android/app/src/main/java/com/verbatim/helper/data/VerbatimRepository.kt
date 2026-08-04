@@ -26,6 +26,12 @@ class VerbatimRepository private constructor(context: Context) {
     val session = SessionStore(context)
     private val supabase = SupabaseClient(session)
     private val dao = VerbatimDatabase.get(context).dao()
+    private val api = com.verbatim.helper.data.remote.ApiClient { supabase.validToken() }
+
+    // ---- app API (search / create / connect device) ----
+    suspend fun search(query: String, pageToken: String? = null) = api.search(query, pageToken)
+    suspend fun createNote(input: String) = api.createNote(input)
+    suspend fun mintAgentToken() = api.mintAgentToken()
 
     val isSignedIn: Boolean get() = session.isSignedIn
     val userId: String? get() = session.userId

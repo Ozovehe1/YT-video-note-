@@ -70,6 +70,9 @@ class SupabaseClient(private val session: SessionStore) {
 
     fun signOut() = session.clear()
 
+    /** A valid access token for calling the Vercel app API (refreshes if near-expiry). */
+    suspend fun validToken(): String? = bearer()
+
     /** A valid bearer token, refreshing first if it's expired/near-expiry. Null if not signed in. */
     private suspend fun bearer(): String? {
         val token = session.accessToken ?: return null

@@ -34,6 +34,35 @@ data class ProgressUpsert(
     val percent: Double,
 )
 
+// --- Vercel app API (search / create / token) ---
+
+@Serializable
+data class CreateNoteRequest(val input: String)
+
+@Serializable
+data class CreateNoteResponse(val id: String? = null, val error: String? = null)
+
+@Serializable
+data class TokenResponse(val token: String? = null, val error: String? = null)
+
+@Serializable
+data class SearchResultDto(
+    @SerialName("video_id") val videoId: String,
+    val title: String = "",
+    val channel: String = "",
+    val thumbnail: String = "",
+    @SerialName("duration_label") val durationLabel: String? = null,
+) {
+    fun toDomain() = com.verbatim.helper.data.model.SearchResult(videoId, title, channel, thumbnail, durationLabel)
+}
+
+@Serializable
+data class SearchResponseDto(
+    val results: List<SearchResultDto> = emptyList(),
+    val nextPageToken: String? = null,
+    val error: String? = null,
+)
+
 @Serializable
 data class ProfilePatch(
     val default_theme: String,

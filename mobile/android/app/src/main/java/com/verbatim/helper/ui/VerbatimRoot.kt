@@ -21,6 +21,7 @@ import androidx.navigation.compose.rememberNavController
 import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.ui.auth.AuthScreen
 import com.verbatim.helper.ui.library.LibraryScreen
+import com.verbatim.helper.ui.newnote.NewNoteScreen
 import com.verbatim.helper.ui.reader.ReaderScreen
 import com.verbatim.helper.ui.settings.SettingsScreen
 import com.verbatim.helper.ui.theme.MonoFamily
@@ -52,7 +53,14 @@ fun VerbatimRoot() {
                 onSignedOut = { nav.navigate(Routes.AUTH) { popUpTo(0) } },
             )
         }
-        composable(Routes.NEW) { Stub("New note", "Search / paste a link — coming in the next phase.") }
+        composable(Routes.NEW) {
+            NewNoteScreen(
+                onBack = { nav.popBackStack() },
+                onCreated = { id ->
+                    nav.navigate(Routes.reader(id)) { popUpTo(Routes.LIBRARY) }
+                },
+            )
+        }
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onBack = { nav.popBackStack() },
