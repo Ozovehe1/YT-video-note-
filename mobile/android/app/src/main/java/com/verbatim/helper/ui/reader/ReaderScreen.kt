@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -57,10 +59,12 @@ import com.verbatim.helper.ui.components.ConfirmDialog
 import com.verbatim.helper.ui.components.ReaderSkeleton
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.verbatim.helper.data.model.BlockType
+import com.verbatim.helper.data.model.NoteBlock
 import com.verbatim.helper.data.model.NoteSection
 import com.verbatim.helper.data.model.NoteStatus
 import com.verbatim.helper.data.model.ReaderFont
@@ -100,28 +104,35 @@ fun ReaderScreen(
         val chromeSource = remember { MutableInteractionSource() }
 
         val sections = vm.sections
-        val headerOffset = 1 // item 0 is the title header; sections start at 1
+        // Flatten the note into per-paragraph rows so the Contents can jump to an EXACT line (not just a
+        // 5-minute block). `layout` maps each section/paragraph to its absolute LazyColumn item index and
+        // builds the finer, timestamped Contents anchors.
+        val layout = remember(sections) { buildReaderLayout(sections) }
 
-        // Resume once, after sections have loaded.
-        LaunchedEffect(sections.size, vm.initialSection) {
+        // Resume once, after sections have loaded — scroll to the saved section's heading row.
+        LaunchedEffect(layout, vm.initialSection) {
             if (!resumed && sections.isNotEmpty()) {
-                val target = (vm.initialSection + headerOffset).coerceIn(0, sections.size)
+                val target = layout.sectionHeadRow.getOrElse(vm.initialSection) { 0 }
+                    .coerceIn(0, (layout.totalItems - 1).coerceAtLeast(0))
                 listState.scrollToItem(target)
                 resumed = true
             }
         }
-        // Persist reading position as the user scrolls (debounced).
-        LaunchedEffect(listState, sections.size) {
+        // Persist reading position as the user scrolls (debounced) — map the visible row back to its section.
+        LaunchedEffect(listState, layout) {
             snapshotFlow { listState.firstVisibleItemIndex }
                 .distinctUntilChanged()
                 .debounce(700)
-                .collect { idx -> if (sections.isNotEmpty()) vm.saveProgress((idx - headerOffset).coerceAtLeast(0)) }
+                .collect { idx ->
+                    if (sections.isNotEmpty()) vm.saveProgress(layout.rowToSection.getOrElse(idx) { 0 }.coerceAtLeast(0))
+                }
         }
 
-        val progress by remember {
+        val progress by remember(layout) {
             derivedStateOf {
+                val total = (layout.totalItems - 1).coerceAtLeast(1)
                 if (sections.isEmpty()) 0f
-                else ((listState.firstVisibleItemIndex - headerOffset + 1).toFloat() / sections.size).coerceIn(0f, 1f)
+                else (listState.firstVisibleItemIndex.toFloat() / total).coerceIn(0f, 1f)
             }
         }
 
@@ -225,8 +236,14 @@ fun ReaderScreen(
                             Box(Modifier.width(40.dp).height(2.dp).background(colors.oxblood))
                         }
                     }
-                    items(sections.size, key = { sections[it].id }) { i ->
-                        SectionView(sections[i], vm.font, vm.fontSize)
+                    sections.forEach { section ->
+                        item(key = "h-${section.id}") { SectionHeading(section) }
+                        itemsIndexed(section.content, key = { bi, _ -> "p-${section.id}-$bi" }) { bi, block ->
+                            val prev = section.content.getOrNull(bi - 1)?.speaker
+                            val speaker = block.speaker?.takeIf { it.isNotBlank() }
+                            val showSpeaker = speaker != null && speaker != prev
+                            BlockView(block, vm.font, vm.fontSize, showSpeaker)
+                        }
                     }
                     item { Spacer(Modifier.height(80.dp)) }
                 }
@@ -235,28 +252,33 @@ fun ReaderScreen(
 
         if (showToc) {
             ModalBottomSheet(onDismissRequest = { showToc = false }, containerColor = colors.surface) {
-                Column(Modifier.padding(bottom = 24.dp)) {
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                     Text(
                         "Contents",
                         fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
                         color = colors.muted, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                     )
-                    sections.forEachIndexed { i, s ->
+                    layout.anchors.forEach { anchor ->
                         Row(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
                                     showToc = false
-                                    scope.launch { listState.animateScrollToItem(i + headerOffset) }
+                                    scope.launch { listState.animateScrollToItem(anchor.rowIndex) }
                                 }
-                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                                .padding(horizontal = 20.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                s.timestampLabel ?: "",
+                                anchor.label,
                                 fontFamily = MonoFamily, fontSize = 12.sp, color = colors.oxblood,
                                 modifier = Modifier.width(64.dp),
                             )
-                            Text(s.heading, fontFamily = ReadFamily, fontSize = 15.sp, color = colors.ink)
+                            Text(
+                                anchor.snippet,
+                                fontFamily = ReadFamily, fontSize = 14.sp, color = colors.ink,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
                 }
@@ -288,66 +310,138 @@ fun ReaderScreen(
     }
 }
 
+/** One section heading row (its own LazyColumn item so paragraphs can be individually addressed). */
 @Composable
-private fun SectionView(section: NoteSection, font: ReaderFont, fontSize: Int) {
+private fun SectionHeading(section: NoteSection) {
+    val colors = VerbatimTheme.colors
+    Row(
+        Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        section.timestampLabel?.let {
+            Text(it, fontFamily = MonoFamily, fontSize = 11.sp, color = colors.oxblood)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            section.heading,
+            fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.muted,
+        )
+    }
+}
+
+/** One paragraph block — its own LazyColumn item, so the Contents can scroll to an exact line. */
+@Composable
+private fun BlockView(block: NoteBlock, font: ReaderFont, fontSize: Int, showSpeaker: Boolean) {
     val colors = VerbatimTheme.colors
     val bodyFamily = if (font == ReaderFont.SANS) SansFamily else ReadFamily
-    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-        // Section heading
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            section.timestampLabel?.let {
-                Text(it, fontFamily = MonoFamily, fontSize = 11.sp, color = colors.oxblood)
-                Spacer(Modifier.width(8.dp))
+    val speaker = block.speaker?.takeIf { it.isNotBlank() }
+    Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        if ((showSpeaker && speaker != null) || block.timestamp != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (showSpeaker && speaker != null) {
+                    Text(
+                        speaker,
+                        fontFamily = SansFamily, fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp, color = colors.oxblood,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                block.timestamp?.let {
+                    Text(it, fontFamily = MonoFamily, fontSize = 10.sp, color = colors.muted)
+                }
             }
-            Text(
-                section.heading,
-                fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.muted,
+            Spacer(Modifier.height(3.dp))
+        }
+        when (block.type) {
+            BlockType.QUOTE -> Row {
+                Box(Modifier.width(3.dp).height((fontSize * 1.7f).dp).background(colors.oxblood))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    block.text, fontFamily = bodyFamily, fontStyle = FontStyle.Italic,
+                    fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.muted,
+                )
+            }
+            BlockType.BULLET -> Text(
+                "•  ${block.text}", fontFamily = bodyFamily,
+                fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.ink,
+            )
+            else -> Text(
+                block.text, fontFamily = bodyFamily,
+                fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.ink,
             )
         }
-        Spacer(Modifier.height(8.dp))
+    }
+}
 
-        var prevSpeaker: String? = null
+// ---- Flattened-reader layout: per-row index map + finer, timestamped Contents anchors ----
+
+private data class Anchor(val label: String, val snippet: String, val rowIndex: Int)
+
+private class ReaderLayout(
+    val totalItems: Int,
+    val sectionHeadRow: IntArray,
+    val rowToSection: IntArray,
+    val anchors: List<Anchor>,
+)
+
+/**
+ * Flatten sections into per-row indices so the Contents can jump to an exact paragraph. Row 0 is the title
+ * header; each section contributes one heading row then one row per paragraph; a trailing spacer closes the
+ * list (this MUST mirror the LazyColumn's item order exactly). Contents anchors are emitted ~once per minute
+ * from the paragraphs' own timestamps, each pointing at that paragraph's absolute row.
+ */
+private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
+    val rowToSection = ArrayList<Int>()
+    rowToSection.add(-1) // 0: title header
+    val headRow = IntArray(sections.size)
+    val anchors = ArrayList<Anchor>()
+    var idx = 1
+    var lastMinute = -1
+    sections.forEachIndexed { si, section ->
+        headRow[si] = idx
+        rowToSection.add(si)
+        idx++
         section.content.forEach { block ->
-            val speaker = block.speaker?.takeIf { it.isNotBlank() }
-            val showSpeaker = speaker != null && speaker != prevSpeaker
-            prevSpeaker = block.speaker
-            Column(Modifier.padding(bottom = 12.dp)) {
-                if (showSpeaker || block.timestamp != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (speaker != null && showSpeaker) {
-                            Text(
-                                speaker,
-                                fontFamily = SansFamily, fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp, color = colors.oxblood,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        block.timestamp?.let {
-                            Text(it, fontFamily = MonoFamily, fontSize = 10.sp, color = colors.muted)
-                        }
-                    }
-                    Spacer(Modifier.height(3.dp))
-                }
-                when (block.type) {
-                    BlockType.QUOTE -> Row {
-                        Box(Modifier.width(3.dp).height((fontSize * 1.7f).dp).background(colors.oxblood))
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            block.text, fontFamily = bodyFamily, fontStyle = FontStyle.Italic,
-                            fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.muted,
-                        )
-                    }
-                    BlockType.BULLET -> Text(
-                        "•  ${block.text}", fontFamily = bodyFamily,
-                        fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.ink,
-                    )
-                    else -> Text(
-                        block.text, fontFamily = bodyFamily,
-                        fontSize = fontSize.sp, lineHeight = (fontSize * 1.7f).sp, color = colors.ink,
-                    )
+            rowToSection.add(si)
+            val secs = parseTimestamp(block.timestamp)
+            if (secs != null) {
+                val minute = secs / 60
+                if (minute != lastMinute) {
+                    anchors.add(Anchor(block.timestamp ?: "", snippetOf(block.text), idx))
+                    lastMinute = minute
                 }
             }
+            idx++
         }
+    }
+    rowToSection.add(sections.lastIndex.coerceAtLeast(0)) // trailing spacer row
+    if (anchors.isEmpty()) anchors.add(Anchor(sections.firstOrNull()?.timestampLabel ?: "0:00", "Top", 1))
+    return ReaderLayout(
+        totalItems = rowToSection.size,
+        sectionHeadRow = headRow,
+        rowToSection = rowToSection.toIntArray(),
+        anchors = anchors,
+    )
+}
+
+private fun snippetOf(text: String): String {
+    val t = text.trim().replace("\n", " ")
+    return if (t.length > 48) t.take(48).trimEnd() + "…" else t
+}
+
+/** Parse "h:mm:ss" / "m:ss" / "s" into seconds; null if unparseable. */
+private fun parseTimestamp(ts: String?): Int? {
+    if (ts.isNullOrBlank()) return null
+    val parts = ts.split(":")
+    return try {
+        when (parts.size) {
+            3 -> parts[0].trim().toInt() * 3600 + parts[1].trim().toInt() * 60 + parts[2].trim().toInt()
+            2 -> parts[0].trim().toInt() * 60 + parts[1].trim().toInt()
+            1 -> parts[0].trim().toInt()
+            else -> null
+        }
+    } catch (e: NumberFormatException) {
+        null
     }
 }
 
