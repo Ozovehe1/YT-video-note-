@@ -27,6 +27,16 @@ interface VerbatimDao {
     @Query("DELETE FROM notes")
     suspend fun clearNotes()
 
+    /** Delete a single note and its cached content + progress (local mirror of the server cascade). */
+    @Query("DELETE FROM notes WHERE id = :id")
+    suspend fun deleteNoteById(id: String)
+
+    @Query("DELETE FROM note_content WHERE noteId = :id")
+    suspend fun deleteContentByNote(id: String)
+
+    @Query("DELETE FROM progress WHERE noteId = :id")
+    suspend fun deleteProgressByNote(id: String)
+
     // --- note content (sections) ---
     @Query("SELECT * FROM note_content WHERE noteId = :noteId LIMIT 1")
     suspend fun contentByNote(noteId: String): NoteContentEntity?

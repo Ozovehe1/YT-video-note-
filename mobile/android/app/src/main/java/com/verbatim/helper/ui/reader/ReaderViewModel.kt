@@ -89,6 +89,11 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
         viewModelScope.launch { repo.saveProgress(noteId, sectionIndex, percent) }
     }
 
+    /** Delete this note, then hand back to the caller (which pops the reader). */
+    fun delete(onDeleted: () -> Unit, onError: () -> Unit) {
+        viewModelScope.launch { if (repo.deleteNote(noteId)) onDeleted() else onError() }
+    }
+
     companion object {
         fun factory(context: Context, noteId: String) = viewModelFactory {
             initializer { ReaderViewModel(VerbatimRepository.get(context), noteId) }

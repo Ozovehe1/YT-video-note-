@@ -70,7 +70,8 @@ class DownloaderService : Service() {
     override fun onDestroy() {
         loop?.cancel()
         scope.cancel()
-        setStatus("Stopped")
+        Prefs.setRunning(this, false)
+        setStatus("Not connected")
         super.onDestroy()
     }
 
@@ -79,10 +80,12 @@ class DownloaderService : Service() {
         val token = Prefs.token(this)
         if (token.isBlank()) {
             // No token yet — connect from the app's Settings. Stay idle, don't nag.
+            Prefs.setRunning(this, false)
             setStatus("Not connected")
             stopSelf()
             return
         }
+        Prefs.setRunning(this, true)
 
         // Wait for youtubedl-android to finish unpacking, then pull the NIGHTLY yt-dlp so
         // YouTube's frequent changes don't break downloads (biggest reliability lever).

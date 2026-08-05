@@ -142,22 +142,12 @@ fun AuthScreen(onSignedIn: () -> Unit, vm: AuthViewModel = viewModel()) {
         }
 
         Spacer(Modifier.height(20.dp))
-        Button(
+        PrimaryButton(
+            text = if (vm.isSignUp) "Create account" else "Sign in",
             onClick = { vm.submit(onSignedIn) },
-            enabled = !vm.loading,
-            colors = ButtonDefaults.buttonColors(containerColor = colors.oxblood, contentColor = colors.paper),
-            contentPadding = PaddingValues(vertical = 14.dp),
+            loading = vm.loading,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (vm.loading) {
-                CircularProgressIndicator(color = colors.paper, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
-            } else {
-                Text(
-                    if (vm.isSignUp) "Create account" else "Sign in",
-                    fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
-                )
-            }
-        }
+        )
 
         Spacer(Modifier.height(10.dp))
         TextButton(onClick = { vm.toggleMode() }) {

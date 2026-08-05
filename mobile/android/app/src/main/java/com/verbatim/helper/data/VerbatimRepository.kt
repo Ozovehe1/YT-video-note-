@@ -65,6 +65,18 @@ class VerbatimRepository private constructor(context: Context) {
         false
     }
 
+    /** Delete a note: server first (so a later refresh reconcile can't resurrect it), then the local
+     *  cache. Returns false if the server delete fails (e.g. offline) so the UI can say so. */
+    suspend fun deleteNote(id: String): Boolean {
+        val ok = supabase.deleteNote(id)
+        if (ok) {
+            dao.deleteNoteById(id)
+            dao.deleteContentByNote(id)
+            dao.deleteProgressByNote(id)
+        }
+        return ok
+    }
+
     // ---- a single note + its sections ----
     suspend fun cachedNote(id: String): Note? = dao.noteById(id)?.toDomain()
 

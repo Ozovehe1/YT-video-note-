@@ -1,7 +1,10 @@
 package com.verbatim.helper.ui.reader
 
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,10 +24,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.List
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,6 +53,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import com.verbatim.helper.ui.components.ConfirmDialog
+import com.verbatim.helper.ui.components.ReaderSkeleton
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -82,10 +88,16 @@ fun ReaderScreen(
         val listState = rememberLazyListState()
         val scope = rememberCoroutineScope()
         val actions = com.verbatim.helper.ui.LocalAppActions.current
+        val context = LocalContext.current
         var showToc by remember { mutableStateOf(false) }
         var showControls by remember { mutableStateOf(false) }
         var showExport by remember { mutableStateOf(false) }
+        var showMore by remember { mutableStateOf(false) }
+        var confirmDelete by remember { mutableStateOf(false) }
         var resumed by remember { mutableStateOf(false) }
+        // Immersive reading: tapping the page hides the chrome so the note is the whole surface.
+        var showChrome by remember { mutableStateOf(true) }
+        val chromeSource = remember { MutableInteractionSource() }
 
         val sections = vm.sections
         val headerOffset = 1 // item 0 is the title header; sections start at 1
@@ -119,48 +131,62 @@ fun ReaderScreen(
                 .background(colors.paper)
                 .safeDrawingPadding(),
         ) {
-            // Top bar
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
-                }
-                Spacer(Modifier.weight(1f))
-                Box {
-                    IconButton(onClick = { showExport = true }) {
-                        Icon(Icons.Filled.Download, contentDescription = "Export", tint = colors.muted)
-                    }
-                    DropdownMenu(expanded = showExport, onDismissRequest = { showExport = false }) {
-                        listOf("pdf" to "PDF", "docx" to "Word", "epub" to "EPUB", "markdown" to "Markdown")
-                            .forEach { (fmt, label) ->
+            // Top bar + progress — hidden in immersive mode so the note owns the screen.
+            AnimatedVisibility(visible = showChrome) {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Box {
+                            IconButton(onClick = { showExport = true }) {
+                                Icon(Icons.Filled.Download, contentDescription = "Export", tint = colors.muted)
+                            }
+                            DropdownMenu(expanded = showExport, onDismissRequest = { showExport = false }) {
+                                listOf("pdf" to "PDF", "docx" to "Word", "epub" to "EPUB", "markdown" to "Markdown")
+                                    .forEach { (fmt, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label) },
+                                            onClick = { showExport = false; actions.exportNote(noteId, fmt) },
+                                        )
+                                    }
+                            }
+                        }
+                        IconButton(onClick = { showToc = true }) {
+                            Icon(Icons.Filled.List, contentDescription = "Contents", tint = colors.muted)
+                        }
+                        IconButton(onClick = { showControls = true }) {
+                            Icon(Icons.Filled.FormatSize, contentDescription = "Text settings", tint = colors.muted)
+                        }
+                        Box {
+                            IconButton(onClick = { showMore = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = colors.muted)
+                            }
+                            DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
                                 DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = { showExport = false; actions.exportNote(noteId, fmt) },
+                                    text = { Text("Delete note", color = colors.oxblood, fontFamily = SansFamily) },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(18.dp)) },
+                                    onClick = { showMore = false; confirmDelete = true },
                                 )
                             }
+                        }
                     }
-                }
-                IconButton(onClick = { showToc = true }) {
-                    Icon(Icons.Filled.List, contentDescription = "Contents", tint = colors.muted)
-                }
-                IconButton(onClick = { showControls = true }) {
-                    Icon(Icons.Filled.FormatSize, contentDescription = "Text settings", tint = colors.muted)
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        color = colors.oxblood,
+                        trackColor = colors.hairline,
+                        modifier = Modifier.fillMaxWidth().height(2.dp),
+                    )
                 }
             }
-            LinearProgressIndicator(
-                progress = { progress },
-                color = colors.oxblood,
-                trackColor = colors.hairline,
-                modifier = Modifier.fillMaxWidth().height(2.dp),
-            )
 
             val note = vm.note
             if (vm.loading && sections.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = colors.oxblood, strokeWidth = 2.dp)
-                }
+                ReaderSkeleton()
             } else if (sections.isEmpty()) {
                 // Still being produced (or nothing yet).
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -178,6 +204,10 @@ fun ReaderScreen(
             } else {
                 LazyColumn(
                     state = listState,
+                    modifier = Modifier.clickable(
+                        interactionSource = chromeSource,
+                        indication = null,
+                    ) { showChrome = !showChrome },
                     contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
                 ) {
                     item(key = "header") {
@@ -238,6 +268,22 @@ fun ReaderScreen(
                 ControlsSheet(vm)
                 Spacer(Modifier.height(24.dp))
             }
+        }
+
+        if (confirmDelete) {
+            ConfirmDialog(
+                title = "Delete this note?",
+                message = "This note and its reading progress will be removed. This can't be undone.",
+                confirmText = "Delete",
+                onConfirm = {
+                    confirmDelete = false
+                    vm.delete(
+                        onDeleted = onBack,
+                        onError = { Toast.makeText(context, "Couldn't delete — check your connection.", Toast.LENGTH_LONG).show() },
+                    )
+                },
+                onDismiss = { confirmDelete = false },
+            )
         }
     }
 }

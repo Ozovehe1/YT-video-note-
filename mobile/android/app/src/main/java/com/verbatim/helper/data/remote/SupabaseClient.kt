@@ -184,6 +184,24 @@ class SupabaseClient(private val session: SessionStore) {
             }
         }
 
+    /** Delete a note the user owns. RLS (`notes_delete_own`) + `on delete cascade` clean up
+     *  its sections and reading progress server-side. Returns true on a 2xx. */
+    suspend fun deleteNote(id: String): Boolean = withContext(Dispatchers.IO) {
+        val token = bearer() ?: return@withContext false
+        try {
+            val req = Request.Builder()
+                .url("${SupabaseConfig.REST}/notes?id=eq.$id")
+                .header("apikey", SupabaseConfig.ANON_KEY)
+                .header("Authorization", "Bearer $token")
+                .header("Prefer", "return=minimal")
+                .delete()
+                .build()
+            http.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun getProgress(noteId: String): ReadingProgress? {
         val text = get("reading_progress?note_id=eq.$noteId&select=note_id,last_section_index,percent&limit=1")
         return json.decodeFromString<List<ProgressDto>>(text).firstOrNull()?.toDomain()

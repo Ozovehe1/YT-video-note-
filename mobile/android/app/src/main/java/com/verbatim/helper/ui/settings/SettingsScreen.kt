@@ -2,6 +2,7 @@ package com.verbatim.helper.ui.settings
 
 import android.app.Application
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -40,10 +42,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.data.model.ReaderFont
 import com.verbatim.helper.data.model.ReadingWidth
+import com.verbatim.helper.ui.LocalAppActions
+import com.verbatim.helper.ui.LocalDeviceState
+import com.verbatim.helper.ui.components.Dot
+import com.verbatim.helper.ui.components.PrimaryButton
+import com.verbatim.helper.ui.components.SecondaryButton
+import com.verbatim.helper.ui.components.SectionLabel
 import com.verbatim.helper.ui.components.Wordmark
 import com.verbatim.helper.ui.theme.ReadFamily
 import com.verbatim.helper.ui.theme.ReaderTheme
 import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.Shape
+import com.verbatim.helper.ui.theme.Space
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import kotlinx.coroutines.launch
 
@@ -84,11 +94,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
-    onConnectPhone: () -> Unit,
     onSignedOut: () -> Unit,
     vm: SettingsViewModel = viewModel(),
 ) {
     val colors = VerbatimTheme.colors
+    val device = LocalDeviceState.current
+    val actions = LocalAppActions.current
+
     Column(
         Modifier
             .fillMaxSize()
@@ -106,78 +118,85 @@ fun SettingsScreen(
             Wordmark()
         }
 
-        Column(Modifier.padding(horizontal = 22.dp)) {
-            Text(
-                "Reader defaults",
-                fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                color = colors.muted, modifier = Modifier.padding(top = 12.dp, bottom = 12.dp),
-            )
-
-            Label("Theme")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                ReaderTheme.entries.forEach { t ->
-                    Chip(t.label.take(6), vm.theme == t, Modifier.weight(1f)) { vm.chooseTheme(t) }
+        Column(Modifier.padding(horizontal = Space.gutter)) {
+            // ---- Reader defaults ----
+            SectionLabel("Reader defaults", Modifier.padding(top = Space.md, bottom = Space.md))
+            Card {
+                Label("Theme")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    ReaderTheme.entries.forEach { t ->
+                        Chip(t.label.take(6), vm.theme == t, Modifier.weight(1f)) { vm.chooseTheme(t) }
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
+                Label("Typeface")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    TypeChip("Serif", ReadFamily, vm.font == ReaderFont.READ, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.READ) }
+                    TypeChip("Sans", SansFamily, vm.font == ReaderFont.SANS, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.SANS) }
+                }
+                Spacer(Modifier.height(18.dp))
+                Label("Size · ${vm.size}sp")
+                Slider(
+                    value = vm.size.toFloat(),
+                    onValueChange = { vm.chooseSize(it.toInt()) },
+                    valueRange = 14f..26f,
+                    steps = 11,
+                    colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
+                )
+                Spacer(Modifier.height(6.dp))
+                Label("Reading width")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    ReadingWidth.entries.forEach { w ->
+                        Chip(w.id.replaceFirstChar { it.uppercase() }, vm.width == w, Modifier.weight(1f)) { vm.chooseWidth(w) }
+                    }
                 }
             }
 
-            Spacer(Modifier.height(18.dp))
-            Label("Typeface")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                TypeChip("Serif", ReadFamily, vm.font == ReaderFont.READ, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.READ) }
-                TypeChip("Sans", SansFamily, vm.font == ReaderFont.SANS, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.SANS) }
-            }
-
-            Spacer(Modifier.height(18.dp))
-            Label("Size · ${vm.size}sp")
-            Slider(
-                value = vm.size.toFloat(),
-                onValueChange = { vm.chooseSize(it.toInt()) },
-                valueRange = 14f..26f,
-                steps = 11,
-                colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
-            )
-
-            Spacer(Modifier.height(18.dp))
-            Label("Reading width")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                ReadingWidth.entries.forEach { w ->
-                    Chip(w.id.replaceFirstChar { it.uppercase() }, vm.width == w, Modifier.weight(1f)) { vm.chooseWidth(w) }
+            // ---- Your phone (Connect / Stop) ----
+            SectionLabel("Your phone", Modifier.padding(top = Space.xxl, bottom = Space.md))
+            Card {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Dot(on = device.running)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (device.running) "Connected" else "Not connected",
+                            fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = colors.ink,
+                        )
+                        Text(
+                            if (device.running) device.status else "Your phone downloads audio on its own residential connection.",
+                            fontFamily = SansFamily, fontSize = 12.sp, color = colors.muted,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                if (device.running) {
+                    SecondaryButton("Stop", onClick = actions.stopDevice, danger = true, modifier = Modifier.fillMaxWidth())
+                } else {
+                    PrimaryButton("Connect this device", onClick = actions.connectDevice, modifier = Modifier.fillMaxWidth())
                 }
             }
 
-            Spacer(Modifier.height(28.dp))
-            Text(
-                "Your phone",
-                fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = colors.muted,
-            )
-            Spacer(Modifier.height(12.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(colors.oxblood)
-                    .clickable(onClick = onConnectPhone)
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Connect this device", fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.paper)
-            }
-
-            Spacer(Modifier.height(28.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(colors.panel)
-                    .clickable { vm.signOut(onSignedOut) }
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Sign out", fontFamily = SansFamily, fontWeight = FontWeight.Medium, fontSize = 15.sp, color = colors.ink)
-            }
-            Spacer(Modifier.height(40.dp))
+            // ---- Account ----
+            SectionLabel("Account", Modifier.padding(top = Space.xxl, bottom = Space.md))
+            SecondaryButton("Sign out", onClick = { vm.signOut(onSignedOut) }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(Space.xxxl))
         }
     }
+}
+
+@Composable
+private fun Card(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    val colors = VerbatimTheme.colors
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(Shape.card)
+            .background(colors.panel)
+            .border(1.dp, colors.hairline, Shape.card)
+            .padding(Space.lg),
+        content = content,
+    )
 }
 
 @Composable
@@ -195,7 +214,7 @@ private fun Chip(label: String, selected: Boolean, modifier: Modifier = Modifier
         modifier
             .height(44.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.panel)
+            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.surface)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -210,7 +229,7 @@ private fun TypeChip(label: String, family: FontFamily, selected: Boolean, modif
         modifier
             .height(48.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.panel)
+            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.surface)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

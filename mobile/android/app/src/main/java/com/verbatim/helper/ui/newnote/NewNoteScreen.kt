@@ -3,6 +3,7 @@ package com.verbatim.helper.ui.newnote
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,10 +51,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.data.model.SearchResult
+import com.verbatim.helper.ui.components.PrimaryButton
 import com.verbatim.helper.ui.theme.DisplayFamily
 import com.verbatim.helper.ui.theme.MonoFamily
 import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.Shape
 import com.verbatim.helper.ui.theme.VerbatimTheme
+import com.verbatim.helper.ui.theme.pressScale
 import kotlinx.coroutines.launch
 
 class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -138,13 +143,12 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
 
             if (vm.looksLikeLink) {
                 Spacer(Modifier.height(10.dp))
-                Box(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.oxblood)
-                        .clickable { vm.create(vm.query.trim(), onCreated) }.padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Create note from link", fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.paper)
-                }
+                PrimaryButton(
+                    text = "Create note from link",
+                    onClick = { vm.create(vm.query.trim(), onCreated) },
+                    loading = vm.creating,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             vm.error?.let {
@@ -175,8 +179,10 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
 @Composable
 private fun ResultRow(r: SearchResult, onClick: () -> Unit) {
     val colors = VerbatimTheme.colors
+    val source = remember { MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colors.panel).clickable(onClick = onClick).padding(12.dp),
+        Modifier.fillMaxWidth().pressScale(source).clip(Shape.card).background(colors.panel)
+            .clickable(interactionSource = source, indication = null, onClick = onClick).padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AsyncImage(
