@@ -38,6 +38,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.verbatim.helper.data.VerbatimRepository
+import com.verbatim.helper.ui.components.PrimaryButton
 import com.verbatim.helper.ui.components.Wordmark
 import com.verbatim.helper.ui.theme.DisplayFamily
 import com.verbatim.helper.ui.theme.ReadFamily
