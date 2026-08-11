@@ -41,6 +41,20 @@ MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 CHUNK_SECONDS = 300  # 5 min
 MAX_NEW_TOKENS = 50000  # per-chunk ceiling (generation stops at end-of-speech well before this)
 
+# MOSS is multilingual (50+ languages) and, given no prompt, uses its built-in CHINESE default which
+# pins no output language — so its language-ID can occasionally emit the wrong language. We pass an
+# explicit English prompt instead (the documented way to steer MOSS is a custom `prompt`), which forces
+# English AND restates the [S01]/timestamp output format that `parse_transcript` depends on. The
+# [S01]/[S02] enumeration is only the label FORMAT — the speaker COUNT still comes from diarization, so a
+# 2-speaker clip yields only [S01] and [S02].
+TRANSCRIBE_PROMPT = (
+    "Transcribe the audio into English text. Begin each segment with its start timestamp and a "
+    "speaker label in the form [S01], [S02], and so on — using only as many distinct speaker labels "
+    "as there are actual speakers in the audio (do not invent extra speakers). Follow the label with "
+    "the spoken content, and mark the end timestamp at the end of each segment to delimit its time "
+    "range. Transcribe the speech verbatim in English; do not translate into any other language."
+)
+
 # Upper bound on GPU workers Modal may spin up at once for the parallel slices. Set high so a long
 # video fans ALL its slices out simultaneously (wall-clock ≈ one slice). The REAL ceiling is your
 # Modal plan's GPU-concurrency quota — Modal won't exceed it no matter what this says — so raising
@@ -190,7 +204,7 @@ class Pipeline:
             generate_transcription,
         )
 
-        messages = build_transcription_messages(audio_path)
+        messages = build_transcription_messages(audio_path, prompt=TRANSCRIBE_PROMPT)
         result = generate_transcription(
             self.model, self.processor, messages,
             max_new_tokens=MAX_NEW_TOKENS, do_sample=False,
