@@ -70,12 +70,22 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
         fontSize = size
     }
 
-    /** While the note is still being produced, re-pull it so the reader fills in on its own. */
+    /**
+     * While the note is still being produced, re-pull it so the reader fills in on its own.
+     *
+     * The interval backs off. A note waits on a phone download and then a GPU transcription, which
+     * for a long video is tens of minutes — a flat 5-second poll spent that whole time hitting
+     * Supabase every 5 seconds on a screen with nothing to show, which is real battery and quota
+     * for no benefit. Fast at first (so a nearly-done note appears promptly), then progressively
+     * slower up to POLL_MAX_MS.
+     */
     private suspend fun pollWhileProcessing() {
+        var wait = POLL_MIN_MS
         while (true) {
             val s = note?.status ?: return
             if (s == NoteStatus.READY || s == NoteStatus.ERROR) return
-            delay(5_000)
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(POLL_MAX_MS)
             repo.refreshNote(noteId)
             note = repo.cachedNote(noteId)
             sections = repo.cachedSections(noteId)
@@ -95,6 +105,9 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
     }
 
     companion object {
+        private const val POLL_MIN_MS = 5_000L
+        private const val POLL_MAX_MS = 60_000L
+
         fun factory(context: Context, noteId: String) = viewModelFactory {
             initializer { ReaderViewModel(VerbatimRepository.get(context), noteId) }
         }

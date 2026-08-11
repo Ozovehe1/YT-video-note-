@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { authenticateAgent } from "@/lib/agent-auth";
+import { authenticateAgentDetailed } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom, getAudioPath } from "@/lib/asr-kickoff";
+import {
+  kickModalAsr,
+  originFrom,
+  getAudioPath,
+  getAsrAttempts,
+  patchNote,
+} from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -14,8 +20,15 @@ const MAX_ASR_ATTEMPTS = 3;
  * to `awaiting_audio`, bounded to MAX_ASR_ATTEMPTS, then a clear error.
  */
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await authenticateAgent(request);
-  if (!userId) return NextResponse.json({ error: "Invalid agent token." }, { status: 401 });
+  // 401 only when the token is genuinely bad. Anything on our side (database down, service-role
+  // key missing) is a 503, so the phone retries instead of erasing its credential.
+  const auth = await authenticateAgentDetailed(request);
+  if (!auth.ok) {
+    return auth.reason === "unavailable"
+      ? NextResponse.json({ error: "Service unavailable." }, { status: 503 })
+      : NextResponse.json({ error: "Invalid agent token." }, { status: 401 });
+  }
+  const userId = auth.userId;
 
   const { id } = await ctx.params;
 
@@ -25,11 +38,15 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   } catch {
     body = {};
   }
+  // What actually went wrong on the phone (a yt-dlp failure, a 413 on upload, …). Previously this
+  // was parsed and thrown away, so every download failure surfaced as the same generic sentence and
+  // there was no way to tell "video is private" from "phone ran out of storage".
+  const reported = typeof body.message === "string" ? body.message.replace(/\s+/g, " ").trim() : "";
 
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, error_message")
+    .select("id")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
@@ -44,38 +61,47 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       audioPath,
       origin: originFrom(request),
     });
-    await admin
-      .from("notes")
-      .update(
-        ok
-          ? { status: "transcribing", error_message: null }
-          : { status: "error", error_message: "Transcription didn’t start — tap retry." },
-      )
-      .eq("id", id)
-      .eq("user_id", userId);
+    await patchNote(
+      admin,
+      id,
+      ok
+        ? { status: "transcribing", error_message: null }
+        : { status: "error", error_message: "Transcription didn’t start — tap retry." },
+      ok ? { claimed_at: new Date().toISOString() } : {},
+    );
     return NextResponse.json({ retry: false, reused: true });
   }
 
-  const prior = Number(/^asr_retry:(\d+)$/.exec(note.error_message ?? "")?.[1] ?? 0);
-  const attempts = prior + 1;
+  const attempts = (await getAsrAttempts(admin, id)) + 1;
 
   if (attempts >= MAX_ASR_ATTEMPTS) {
-    await admin
-      .from("notes")
-      .update({
-        status: "error",
-        error_message: "We couldn't get this video's audio. Please try again in a bit.",
-      })
-      .eq("id", id)
-      .eq("user_id", userId);
+    await patchNote(
+      admin,
+      id,
+      { status: "error", error_message: downloadFailureMessage(reported) },
+      { asr_attempts: attempts, claimed_at: null },
+    );
     return NextResponse.json({ retry: false });
   }
 
-  // Requeue for another attempt; stash the counter.
-  await admin
-    .from("notes")
-    .update({ status: "awaiting_audio", error_message: `asr_retry:${attempts}` })
-    .eq("id", id)
-    .eq("user_id", userId);
+  // Requeue for another attempt. The counter goes in its own column, so `error_message` stays
+  // free for text a human is meant to read.
+  await patchNote(
+    admin,
+    id,
+    { status: "awaiting_audio", error_message: null },
+    { asr_attempts: attempts, claimed_at: null },
+  );
   return NextResponse.json({ retry: true, attempts });
+}
+
+/**
+ * A message for the library card once we've stopped retrying. yt-dlp's own wording is the only
+ * thing that can distinguish an unavailable video from a network blip, so keep a trimmed version
+ * of it after our own plain-English sentence.
+ */
+function downloadFailureMessage(reported: string): string {
+  const base = "We couldn't get this video's audio.";
+  if (!reported) return `${base} Please try again in a bit.`;
+  return `${base} ${reported.slice(0, 200)}`;
 }

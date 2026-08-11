@@ -1,6 +1,9 @@
 package com.verbatim.helper.data
 
 import android.content.Context
+import android.content.Intent
+import com.verbatim.helper.DownloaderService
+import com.verbatim.helper.Prefs
 import com.verbatim.helper.data.local.NoteContentEntity
 import com.verbatim.helper.data.local.VerbatimDatabase
 import com.verbatim.helper.data.local.decodeSections
@@ -23,6 +26,7 @@ import kotlinx.coroutines.flow.map
  */
 class VerbatimRepository private constructor(context: Context) {
 
+    private val appContext = context.applicationContext
     val session = SessionStore(context)
     private val supabase = SupabaseClient(session)
     private val dao = VerbatimDatabase.get(context).dao()
@@ -43,9 +47,27 @@ class VerbatimRepository private constructor(context: Context) {
     suspend fun signIn(email: String, password: String) = supabase.signIn(email, password)
     suspend fun signUp(email: String, password: String) = supabase.signUp(email, password)
 
+    /**
+     * Sign out and leave nothing of this account behind on the device.
+     *
+     * The agent token is part of that. It authenticates the downloader as a specific user, so a
+     * token surviving sign-out means the background service keeps claiming and downloading the
+     * previous account's jobs — on a phone somebody else has since signed into. Clearing it also
+     * stops the service, which would otherwise keep polling with a credential the app no longer
+     * considers itself to have.
+     */
     suspend fun signOut() {
         supabase.signOut()
         dao.clearNotes(); dao.clearContent(); dao.clearProgress(); dao.clearProfile()
+        Prefs.setToken(appContext, "")
+        Prefs.setEnabled(appContext, false)
+        Prefs.setRunning(appContext, false)
+        Prefs.setStatus(appContext, "Not connected")
+        runCatching {
+            appContext.startService(
+                Intent(appContext, DownloaderService::class.java).setAction(DownloaderService.ACTION_STOP),
+            )
+        }
     }
 
     // ---- library (observe Room, refresh from Supabase) ----

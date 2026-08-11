@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
-import { kickModalAsr, originFrom, getAudioPath } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, getAudioPath, getAsrAttempts, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -35,17 +35,21 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id, user_id, title, channel, error_message")
+    .select("id, user_id, status")
     .eq("id", noteId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
+
+  // Already finished. A signed body stays valid forever (the signature covers no timestamp or
+  // nonce), and Modal itself can deliver twice, so replaying a callback would otherwise wipe and
+  // rewrite a note the user is reading. Nothing to do — report success so the sender stops.
+  if (note.status === "ready") return NextResponse.json({ ok: true, duplicate: true });
 
   // ASR failed inside Modal. If the audio is still in Storage, re-run ASR on that same file —
   // bounded — with no phone involvement (never re-download). Give up with a clear error after
   // MAX_ASR_ATTEMPTS or when there's no audio to reuse.
   if (body.status === "error") {
-    const prior = Number(/^asr_retry:(\d+)$/.exec(note.error_message ?? "")?.[1] ?? 0);
-    const attempts = prior + 1;
+    const attempts = (await getAsrAttempts(admin, noteId)) + 1;
     const audioPath = await getAudioPath(admin, noteId);
     let requeued = false;
     if (attempts < MAX_ASR_ATTEMPTS && audioPath) {
@@ -55,18 +59,25 @@ export async function POST(request: Request) {
         origin: originFrom(request),
       });
       if (ok) {
-        await admin
-          .from("notes")
-          .update({ status: "transcribing", error_message: `asr_retry:${attempts}` })
-          .eq("id", noteId);
+        await patchNote(
+          admin,
+          noteId,
+          { status: "transcribing", error_message: null },
+          { asr_attempts: attempts },
+        );
         requeued = true;
       }
     }
     if (!requeued) {
-      await admin
-        .from("notes")
-        .update({ status: "error", error_message: "We couldn't transcribe this video's audio. Please try again." })
-        .eq("id", noteId);
+      await patchNote(
+        admin,
+        noteId,
+        {
+          status: "error",
+          error_message: "We couldn't transcribe this video's audio. Please try again.",
+        },
+        { asr_attempts: attempts },
+      );
     }
     return NextResponse.json({ ok: true });
   }
@@ -105,12 +116,13 @@ export async function POST(request: Request) {
     }
   }
 
-  // The note is finished the moment the sections are in — nothing else to generate. This update
-  // deliberately does NOT touch audio_path, so a note always reaches `ready` even if that column
-  // doesn't exist yet (migration 0004 not run).
-  await admin
-    .from("notes")
-    .update({
+  // The note is finished the moment the sections are in — nothing else to generate. audio_path is
+  // deliberately left alone (see below), and the bookkeeping columns are optional, so a note always
+  // reaches `ready` even on a database that hasn't run migrations 0004/0005.
+  await patchNote(
+    admin,
+    noteId,
+    {
       video_type: videoType,
       speakers,
       total_sections: rows.length,
@@ -119,8 +131,9 @@ export async function POST(request: Request) {
       transcript: null,
       status: "ready",
       error_message: null,
-    })
-    .eq("id", noteId);
+    },
+    { asr_attempts: 0, claimed_at: null },
+  );
 
   // Keep the audio in Storage (and leave audio_path pointing at it) so re-transcribing this video —
   // e.g. after a pipeline change — reuses the file instead of making the phone re-download it.

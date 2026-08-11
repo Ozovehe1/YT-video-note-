@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { revalidatePath } from "next/cache";
 import { getAuth } from "@/lib/supabase/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { extractVideoId } from "@/lib/utils";
@@ -9,10 +8,13 @@ import { findReusableAudio, kickModalAsr, originFrom } from "@/lib/asr-kickoff";
 export const maxDuration = 60;
 
 /**
- * Create a note. The audio is fetched + transcribed on the user's machine by the local
- * helper (residential IP, diarizing ASR), so here we only resolve the video's metadata
- * and queue the note as `awaiting_audio`. The helper picks it up, transcribes, and posts
- * the diarized transcript back, which flips the note to `processing`.
+ * Create a note. The audio is fetched on the user's phone (residential IP) and transcribed on
+ * Modal, so here we only resolve the video's metadata and queue the note as `awaiting_audio`. The
+ * phone claims it, uploads the audio, and Modal posts the diarized transcript back to
+ * /api/notes/asr-callback, which writes the sections and flips the note to `ready`.
+ *
+ * Nothing is revalidated afterwards: the product UI is the native app, which reads Supabase
+ * directly, and the web app is an info-only landing page with no note routes to invalidate.
  */
 export async function POST(request: Request) {
   const { supabase, user } = await getAuth(request);
@@ -89,10 +91,6 @@ export async function POST(request: Request) {
   } catch {
     /* reuse is best-effort — on any hiccup the note stays awaiting_audio for the phone */
   }
-
-  // Make sure the new note appears right away wherever notes are listed.
-  revalidatePath("/library");
-  revalidatePath("/");
 
   return NextResponse.json({ id: note.id });
 }

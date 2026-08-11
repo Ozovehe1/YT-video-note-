@@ -19,25 +19,43 @@ function safeEqualHex(a: string, b: string): boolean {
 }
 
 /**
- * Resolve the `Authorization: Bearer <token>` on an agent request to its owning user.
- * Uses the service-role client (no user session). Returns the user id, or null when the
- * token is missing/invalid. Touches last_used_at best-effort.
+ * The outcome of authenticating an agent request.
+ *
+ * "rejected" and "unavailable" are kept apart on purpose. The phone treats a 401 as final — it
+ * erases its stored token and stands down — so a database hiccup must never be reported as a bad
+ * credential, or a few seconds of Supabase trouble would silently disconnect every user's
+ * downloader and leave their notes queued until someone noticed and tapped Connect again.
  */
-export async function authenticateAgent(request: Request): Promise<string | null> {
+export type AgentAuth =
+  | { ok: true; userId: string }
+  | { ok: false; reason: "rejected" | "unavailable" };
+
+/**
+ * Resolve the `Authorization: Bearer <token>` on an agent request to its owning user.
+ * Uses the service-role client (no user session). Touches last_used_at best-effort.
+ */
+export async function authenticateAgentDetailed(request: Request): Promise<AgentAuth> {
   const header = request.headers.get("authorization") || "";
   const m = header.match(/^Bearer\s+(.+)$/i);
-  if (!m) return null;
+  if (!m) return { ok: false, reason: "rejected" };
   const token = m[1].trim();
-  if (!token) return null;
+  if (!token) return { ok: false, reason: "rejected" };
 
   const hash = hashToken(token);
-  const admin = createAdminClient();
-  const { data } = await admin
+  let admin: ReturnType<typeof createAdminClient>;
+  try {
+    admin = createAdminClient();
+  } catch {
+    return { ok: false, reason: "unavailable" }; // service-role env missing — our fault, not theirs
+  }
+
+  const { data, error } = await admin
     .from("agent_tokens")
     .select("id, user_id, token_hash")
     .eq("token_hash", hash)
     .maybeSingle();
-  if (!data || !safeEqualHex(data.token_hash, hash)) return null;
+  if (error) return { ok: false, reason: "unavailable" };
+  if (!data || !safeEqualHex(data.token_hash, hash)) return { ok: false, reason: "rejected" };
 
   // Best-effort activity stamp — never block auth on it.
   admin
@@ -46,5 +64,11 @@ export async function authenticateAgent(request: Request): Promise<string | null
     .eq("id", data.id)
     .then(() => {}, () => {});
 
-  return data.user_id as string;
+  return { ok: true, userId: data.user_id as string };
+}
+
+/** The user id behind an agent request, or null if it couldn't be authenticated. */
+export async function authenticateAgent(request: Request): Promise<string | null> {
+  const result = await authenticateAgentDetailed(request);
+  return result.ok ? result.userId : null;
 }

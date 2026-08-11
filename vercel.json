@@ -4,7 +4,6 @@
   "buildCommand": "next build",
   "installCommand": "pnpm install --no-frozen-lockfile",
   "functions": {
-    "app/api/notes/[id]/generate-next/route.ts": { "maxDuration": 60 },
     "app/api/notes/[id]/export/route.ts": { "maxDuration": 60 },
     "app/api/notes/route.ts": { "maxDuration": 60 }
   }

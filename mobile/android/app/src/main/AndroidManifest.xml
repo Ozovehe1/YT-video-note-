@@ -13,9 +13,16 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!-- Restarts the downloader after a reboot, so a note queued overnight isn't still sitting in
+         "Waiting for your phone" in the morning. Only acts if the user had it connected. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- allowBackup=false: the app's SharedPreferences hold the Supabase refresh token and the
+         agent token, and with backup on those ride into Google Drive and can be restored onto
+         another device. Nothing else here is worth preserving — notes re-sync on sign-in. -->
     <application
         android:name=".VerbatimApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.Verbatim"
@@ -35,6 +42,16 @@
             android:name=".DownloaderService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

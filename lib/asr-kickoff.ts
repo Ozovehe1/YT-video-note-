@@ -116,10 +116,54 @@ export async function getAudioPath(admin: Admin, noteId: string): Promise<string
 
 /** Best-effort write of a note's audio_path; silently no-ops if the column doesn't exist. */
 export async function setAudioPath(admin: Admin, noteId: string, value: string | null): Promise<void> {
+  await patchNote(admin, noteId, {}, { audio_path: value });
+}
+
+/**
+ * Update a note with a REQUIRED patch plus an OPTIONAL one whose columns may not exist yet (they
+ * arrive with migrations 0004/0005). Tries both together; if Postgres rejects the write because a
+ * column is missing, it retries with the required fields alone.
+ *
+ * Without this, one un-run migration would take the whole status transition down with it — a note
+ * would never leave `transcribing` because we also tried to bump a counter column that isn't there.
+ * The required half is what the pipeline's correctness depends on; the optional half is bookkeeping.
+ */
+export async function patchNote(
+  admin: Admin,
+  noteId: string,
+  required: Record<string, unknown>,
+  optional: Record<string, unknown> = {},
+): Promise<void> {
+  const hasOptional = Object.keys(optional).length > 0;
+  if (hasOptional) {
+    const { error } = await admin
+      .from("notes")
+      .update({ ...required, ...optional })
+      .eq("id", noteId);
+    if (!error) return;
+  }
+  if (Object.keys(required).length === 0) return;
+  await admin.from("notes").update(required).eq("id", noteId);
+}
+
+/**
+ * How many ASR attempts this note has already burned. Lives in its own column rather than being
+ * encoded into `error_message` — that field is shown to the user, so a counter parked there both
+ * leaked "asr_retry:2" into the app and made it impossible to keep a real error message alongside
+ * the count. Returns 0 when the column isn't there yet (migration 0005 not run).
+ */
+export async function getAsrAttempts(admin: Admin, noteId: string): Promise<number> {
   try {
-    await admin.from("notes").update({ audio_path: value }).eq("id", noteId);
+    const { data, error } = await admin
+      .from("notes")
+      .select("asr_attempts")
+      .eq("id", noteId)
+      .maybeSingle();
+    if (error || !data) return 0;
+    const n = Number((data as { asr_attempts?: number | null }).asr_attempts ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
   } catch {
-    /* column may not exist yet — reuse just stays off until migration 0004 runs */
+    return 0;
   }
 }
 

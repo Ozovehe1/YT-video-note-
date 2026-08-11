@@ -83,8 +83,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun chooseTheme(t: ReaderTheme) { theme = t; persist() }
     fun chooseFont(f: ReaderFont) { font = f; persist() }
-    fun chooseSize(s: Int) { size = s; persist() }
     fun chooseWidth(w: ReadingWidth) { width = w; persist() }
+
+    /**
+     * Size is split into a live preview and a commit, because the slider reports every value it
+     * passes through. Persisting on each one meant a single drag across the range fired a dozen
+     * Room writes and a dozen Supabase PATCHes, all but the last immediately obsolete.
+     */
+    fun previewSize(s: Int) { size = s }
+    fun commitSize() = persist()
 
     fun signOut(onDone: () -> Unit) {
         viewModelScope.launch { repo.signOut(); onDone() }
@@ -138,7 +145,8 @@ fun SettingsScreen(
                 Label("Size · ${vm.size}sp")
                 Slider(
                     value = vm.size.toFloat(),
-                    onValueChange = { vm.chooseSize(it.toInt()) },
+                    onValueChange = { vm.previewSize(it.toInt()) },
+                    onValueChangeFinished = { vm.commitSize() },
                     valueRange = 14f..26f,
                     steps = 11,
                     colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),

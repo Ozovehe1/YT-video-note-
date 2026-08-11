@@ -119,6 +119,9 @@ Create a project, then in the **SQL Editor** run the migrations in order:
   storage bucket the phone uploads to.
 - [`supabase/migrations/0004_audio_path.sql`](supabase/migrations/0004_audio_path.sql) — records the
   uploaded audio's path so re-transcribing a video reuses the stored file instead of re-downloading it.
+- [`supabase/migrations/0005_pipeline_state.sql`](supabase/migrations/0005_pipeline_state.sql) — the
+  ASR retry counter (previously smuggled through the user-facing `error_message`) and the claim
+  timestamp that lets a note stranded by a killed phone be requeued instead of stalling forever.
 
 Two keys are used: the **publishable (anon)** key for the app + browser (RLS enforces access), and the
 **service-role** key server-side for the agent endpoints and the Modal callback (which have no user
@@ -201,7 +204,8 @@ lib/
   supabase/{client,server,middleware,admin,auth}   auth: accepts cookie OR Bearer (native app)
 agent/                           Modal ASR service (modal_asr.py)
 mobile/                          the native Android app — the whole product UI + downloader (+ CI)
-supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio_path
+supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio_path,
+                                 0005_pipeline_state
 ```
 
 ## Notes & limits
@@ -209,7 +213,9 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio
 - **Speaker labels are neutral** (*Speaker 1*, *Speaker 2*) — they come straight from the diarizer, so
   they're accurate turns without guessing real names.
 - **The phone must be reachable** for a note to advance. If the app isn't running, notes wait in
-  **"Waiting for your phone"** until it is — nothing is lost.
+  **"Waiting for your phone"** until it is — nothing is lost. The downloader restarts itself after a
+  reboot or an app update, and a note whose download was cut short (app killed mid-job) is returned
+  to the queue after 90 minutes rather than sitting in "Transcribing" forever.
 - **Very long videos** upload a compressed audio file to Supabase Storage (16 kHz mono AAC, ~14 MB/hour
   — a 5 h talk ≈ 70 MB); raise the Storage global file-size limit only if a very long upload is rejected.
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.

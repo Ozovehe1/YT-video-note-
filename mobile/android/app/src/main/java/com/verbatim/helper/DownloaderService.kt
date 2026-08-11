@@ -13,12 +13,15 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -75,22 +78,22 @@ class DownloaderService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun runLoop() {
+    private suspend fun runLoop() = coroutineScope {
         val base = Prefs.BASE_URL.trimEnd('/')
-        val token = Prefs.token(this)
+        val token = Prefs.token(this@DownloaderService)
         if (token.isBlank()) {
             // No token yet — connect from the app's Settings. Stay idle, don't nag.
-            Prefs.setRunning(this, false)
+            Prefs.setRunning(this@DownloaderService, false)
             setStatus("Not connected")
             stopSelf()
-            return
+            return@coroutineScope
         }
-        Prefs.setRunning(this, true)
+        Prefs.setRunning(this@DownloaderService, true)
 
         // Wait for youtubedl-android to finish unpacking, then pull the NIGHTLY yt-dlp so
         // YouTube's frequent changes don't break downloads (biggest reliability lever).
         setStatus("Preparing…")
-        while (!VerbatimApp.ready && currentCoroutineActive()) delay(1000)
+        while (!VerbatimApp.ready) delay(1000)
         try {
             YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
         } catch (e: Exception) {
@@ -98,10 +101,15 @@ class DownloaderService : Service() {
         }
 
         setStatus("Polling…")
-        while (currentCoroutineActive()) {
+        // isActive comes from the coroutine's own context, so cancelling the scope ends the loop
+        // immediately. The previous check read a field that the coroutine sets on itself, which is
+        // still null on the first pass and left a window where a cancelled loop kept polling.
+        while (isActive) {
             try {
                 val jobs = fetchJobs(base, token)
                 if (jobs.isEmpty()) setStatus("Polling…") else for (job in jobs) processJob(base, token, job)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(VerbatimApp.TAG, "poll error: ${e.message}")
                 setStatus("Waiting for connection…")
@@ -109,8 +117,6 @@ class DownloaderService : Service() {
             delay(POLL_SECONDS * 1000L)
         }
     }
-
-    private fun currentCoroutineActive(): Boolean = loop?.isActive != false
 
     /** GET /api/agent/jobs → claim awaiting_audio notes; returns the returned job objects. */
     private fun fetchJobs(base: String, token: String): List<JSONObject> {
@@ -122,7 +128,15 @@ class DownloaderService : Service() {
         http.newCall(req).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
             if (resp.code == 401) {
-                setStatus("Invalid token — check Settings")
+                // The token is gone for good (revoked, or superseded by a connect on another
+                // device). Polling with it can only keep failing, so drop it and stand down —
+                // clearing it is also what lets Connect mint a fresh one instead of reusing this
+                // dead one. The user sees "Not connected" and one tap fixes it.
+                Prefs.setToken(this, "")
+                Prefs.setEnabled(this, false)
+                Prefs.setRunning(this, false)
+                setStatus("Disconnected — tap Connect to reconnect")
+                stopSelf()
                 return emptyList()
             }
             if (!resp.isSuccessful) return emptyList()
@@ -137,35 +151,42 @@ class DownloaderService : Service() {
         val uploadUrl = job.getString("upload_url")
         val storagePath = job.getString("storage_path")
         val title = job.optString("title", "video")
+        // Whatever happens below, the scratch directory goes away. yt-dlp leaves partial downloads
+        // and the pre-transcode original in there, so a few failures used to be enough to fill a
+        // budget phone's storage — which then causes the *next* download to fail too.
+        val workDir = File(cacheDir, "dl-$noteId")
         try {
             setStatus("Downloading “$title” 0%")
-            val audio = downloadAudio(videoUrl, noteId, title)
+            val audio = downloadAudio(videoUrl, workDir, title)
             // Supabase's free tier rejects uploads over 50 MB. Compressed 16 kHz mono audio only
             // crosses that around ~4.5 h of speech; if it still does, fail clearly instead of
             // uploading a doomed file and looping.
             if (audio.length() > 49L * 1024 * 1024) {
                 val mb = audio.length() / (1024 * 1024)
-                audio.delete()
                 throw IllegalStateException("Audio is ${mb}MB after compression — too long for the 50 MB storage limit")
             }
             setStatus("Uploading: $title (${audio.length() / 1024} KB)")
             upload(uploadUrl, audio)
-            audio.delete()
             markUploaded(base, token, noteId, storagePath)
             setStatus("Handed off: $title")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // Surface the ACTUAL reason (the notification is expandable) so a failure is diagnosable
             // instead of a generic "couldn't fetch" — e.g. "upload failed: 413", a yt-dlp/ffmpeg
-            // error, or "produced no audio file". Also logged and reported to the server.
+            // error, or "produced no audio file". Also logged and reported to the server, which now
+            // keeps it on the note so the reason is visible in the library too.
             Log.e(VerbatimApp.TAG, "job $noteId failed", e)
             val reason = (e.message ?: e.javaClass.simpleName).replace("\n", " ").trim()
             reportError(base, token, noteId, reason)
             setStatus("Couldn't finish “$title”: ${reason.take(180)}")
+        } finally {
+            workDir.deleteRecursively()
         }
     }
 
-    private fun downloadAudio(videoUrl: String, noteId: String, title: String): File {
-        val dir = File(cacheDir, "dl-$noteId").apply { deleteRecursively(); mkdirs() }
+    private fun downloadAudio(videoUrl: String, dir: File, title: String): File {
+        dir.apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
         request.addOption("-f", "bestaudio/best")
         // Pick the SMALLEST audio stream YouTube offers (~48 kbps) instead of the default best
@@ -194,10 +215,14 @@ class DownloaderService : Service() {
 
         // Surface real progress so a slow download never looks frozen. yt-dlp reports the download
         // percent; once it hits 100 % the AAC transcode runs (no further %), so show "Converting…".
+        //
+        // Only every 5th percent is published. Each update rebuilds a notification AND fires a
+        // broadcast, and Android rate-limits notification posts — pushing 100 of them at whatever
+        // speed yt-dlp reports burned battery to produce updates the system was throttling anyway.
         var lastShown = -1
         YoutubeDL.getInstance().execute(request) { progress, _, _ ->
             val pct = progress.toInt()
-            if (pct in 0..100 && pct != lastShown) {
+            if (pct in 0..100 && (pct >= 100 || pct - lastShown >= PROGRESS_STEP_PERCENT)) {
                 lastShown = pct
                 setStatus(if (pct >= 100) "Converting “$title”…" else "Downloading “$title” $pct%")
             }
@@ -290,6 +315,8 @@ class DownloaderService : Service() {
         private const val CHANNEL = "verbatim"
         private const val NOTE_ID = 1
         private const val POLL_SECONDS = 20L
+        /** Publish download progress at most every N percent (see downloadAudio). */
+        private const val PROGRESS_STEP_PERCENT = 5
         private val JSON = "application/json".toMediaType()
     }
 }

@@ -72,8 +72,11 @@ import com.verbatim.helper.ui.theme.Shape
 import com.verbatim.helper.ui.theme.Space
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import com.verbatim.helper.ui.theme.pressScale
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
@@ -88,7 +91,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     var firstLoad by mutableStateOf(true)
         private set
 
-    init { refresh() }
+    private var watcher: Job? = null
+
+    init {
+        refresh()
+        watchInFlight()
+    }
 
     fun refresh() {
         viewModelScope.launch {
@@ -99,8 +107,37 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Keep the library live while anything is still being produced.
+     *
+     * A note takes minutes to go from "Waiting for your phone" to readable, and the list only ever
+     * refreshed on open or on a manual pull — so a note finishing while the user sat on this screen
+     * stayed greyed out until they thought to swipe down. This polls only while at least one note
+     * is unfinished, and backs off, so an idle library costs nothing.
+     */
+    private fun watchInFlight() {
+        watcher?.cancel()
+        watcher = viewModelScope.launch {
+            var wait = POLL_MIN_MS
+            while (isActive) {
+                delay(wait)
+                if (notes.value.none { it.status != NoteStatus.READY }) {
+                    wait = POLL_MIN_MS // idle: re-check cheaply, but don't hit the network
+                    continue
+                }
+                repo.refreshNotes()
+                wait = (wait * 2).coerceAtMost(POLL_MAX_MS)
+            }
+        }
+    }
+
     fun delete(id: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch { onResult(repo.deleteNote(id)) }
+    }
+
+    private companion object {
+        const val POLL_MIN_MS = 8_000L
+        const val POLL_MAX_MS = 60_000L
     }
 }
 

@@ -4,7 +4,7 @@ name: Build Android APK
 # (the user is phone-only). Download the artifact from the run and sideload it.
 on:
   push:
-    branches: [claude/chat-session-vxv6bb, main]
+    branches: ['main', 'claude/**']
     paths:
       - 'mobile/**'
       - '.github/workflows/android.yml'
@@ -40,21 +40,25 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
+      # Release, not debug. A debug APK is built with android:debuggable=true, which lets anyone
+      # with USB debugging read the app's private storage — where the Supabase refresh token and
+      # the agent token live. It's signed with the same committed key as before, so it installs
+      # straight over an existing debug-signed install with no uninstall.
+      - name: Build release APK
         env:
           # Each run gets an increasing versionCode so installs register as updates.
           VERSION_CODE: ${{ github.run_number }}
           VERSION_NAME: 1.0.${{ github.run_number }}
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/verbatim.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/verbatim.apk"
 
       - name: Upload APK (build artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: verbatim-debug-apk
-          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          name: verbatim-apk
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       # Publish the APK to a fixed "android-latest" Release so it's a permanent,
@@ -66,7 +70,7 @@ jobs:
           tag_name: android-latest
           name: Verbatim phone helper (latest)
           body: |
-            Latest Verbatim phone-helper APK (armeabi-v7a, signed with the project's fixed key).
+            Latest Verbatim APK (release build, armeabi-v7a, signed with the project's fixed key).
             Tap `verbatim.apk` below to download, then sideload it.
           files: verbatim.apk
           fail_on_unmatched_files: true

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { authenticateAgent } from "@/lib/agent-auth";
+import { authenticateAgentDetailed } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom, setAudioPath } from "@/lib/asr-kickoff";
+import { kickModalAsr, originFrom, setAudioPath, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -14,8 +14,15 @@ export const maxDuration = 60;
  * video. If ASR can't start, the note is left in a retryable state that reuses the same file.
  */
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await authenticateAgent(request);
-  if (!userId) return NextResponse.json({ error: "Invalid agent token." }, { status: 401 });
+  // 401 only when the token is genuinely bad. Anything on our side (database down, service-role
+  // key missing) is a 503, so the phone retries instead of erasing its credential.
+  const auth = await authenticateAgentDetailed(request);
+  if (!auth.ok) {
+    return auth.reason === "unavailable"
+      ? NextResponse.json({ error: "Service unavailable." }, { status: 503 })
+      : NextResponse.json({ error: "Invalid agent token." }, { status: 401 });
+  }
+  const userId = auth.userId;
 
   const { id } = await ctx.params;
 
@@ -39,13 +46,15 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
 
-  // Mark it transcribing, and separately record the uploaded file (best-effort — the audio_path
-  // write no-ops if that column isn't there yet, without blocking transcription).
-  await admin
-    .from("notes")
-    .update({ status: "transcribing", error_message: null })
-    .eq("id", id)
-    .eq("user_id", userId);
+  // Mark it transcribing and record the uploaded file. The audio_path write is best-effort — it
+  // no-ops if that column isn't there yet, without blocking transcription. Re-stamping claimed_at
+  // restarts the stale-claim clock now that the wait is on Modal rather than on the phone.
+  await patchNote(
+    admin,
+    id,
+    { status: "transcribing", error_message: null },
+    { claimed_at: new Date().toISOString() },
+  );
   await setAudioPath(admin, id, storagePath);
 
   const ok = await kickModalAsr(admin, { noteId: id, audioPath: storagePath, origin: originFrom(request) });

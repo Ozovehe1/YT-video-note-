@@ -1,18 +1,15 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getAuth } from "@/lib/supabase/auth";
 
 export const maxDuration = 30;
 
 /**
- * Diagnostic endpoint — open it in a browser while signed in. Reports which env vars are
- * present (booleans only, never values) and the deployed commit. The pipeline is
- * LLM-free now, so there's no model to probe.
+ * Diagnostic endpoint — open it in a browser while signed in, or call it from the app with a
+ * bearer token. Reports which env vars are present (booleans only, never values) and the deployed
+ * commit. The pipeline is LLM-free now, so there's no model to probe.
  */
-export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export async function GET(request: Request) {
+  const { user } = await getAuth(request);
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 
   const commit =

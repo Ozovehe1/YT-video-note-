@@ -11,8 +11,15 @@ android {
 
     // A FIXED signing key (committed) so every build shares one signature. That lets a new
     // APK install right over the old one — no uninstall — and is what makes auto-update work.
+    // The same key signs release, so phones already running a debug-signed build update cleanly.
     signingConfigs {
         debug {
+            storeFile file("verbatim-debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+        release {
             storeFile file("verbatim-debug.keystore")
             storePassword "android"
             keyAlias "androiddebugkey"
@@ -59,8 +66,18 @@ android {
 
     buildTypes {
         release {
+            signingConfig signingConfigs.release
+            // Not debuggable. This is the variant users install, and a debuggable APK lets anyone
+            // with USB debugging pull the app's private files off the phone — which here means the
+            // Supabase refresh token and the agent token, i.e. full access to that account's notes.
+            debuggable false
+            // R8 off deliberately: youtubedl-android drives its bundled Python through reflection,
+            // and shrinking it needs keep rules we have no way to verify without a device. Resource
+            // shrinking is tied to code shrinking, so both stay off until that can be tested.
             minifyEnabled false
-            // We ship the debug variant for v1; release kept unsigned/simple.
+        }
+        debug {
+            signingConfig signingConfigs.debug
         }
     }
 
