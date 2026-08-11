@@ -1,8 +1,9 @@
 package com.verbatim.helper.ui.reader
 
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -22,15 +23,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +44,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,15 +52,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import com.verbatim.helper.ui.components.ConfirmDialog
-import com.verbatim.helper.ui.components.ReaderSkeleton
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,12 +71,18 @@ import com.verbatim.helper.data.model.NoteBlock
 import com.verbatim.helper.data.model.NoteSection
 import com.verbatim.helper.data.model.NoteStatus
 import com.verbatim.helper.data.model.ReaderFont
-import com.verbatim.helper.ui.theme.DisplayFamily
-import com.verbatim.helper.ui.theme.MonoFamily
+import com.verbatim.helper.ui.components.ConfirmDialog
+import com.verbatim.helper.ui.components.ReaderSkeleton
+import com.verbatim.helper.ui.components.SectionLabel
+import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.ReadFamily
 import com.verbatim.helper.ui.theme.ReaderTheme
 import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.Shape
+import com.verbatim.helper.ui.theme.Space
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
+import com.verbatim.helper.ui.theme.colorsFor
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -142,75 +151,92 @@ fun ReaderScreen(
                 .background(colors.paper)
                 .safeDrawingPadding(),
         ) {
-            // Top bar + progress — hidden in immersive mode so the note owns the screen.
-            AnimatedVisibility(visible = showChrome) {
-                Column {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
+            // Top bar + progress. In immersive mode it FADES rather than collapsing: an
+            // AnimatedVisibility that removes height would shrink the column and slide the
+            // paragraph you were reading up the screen — losing your place is a bad trade for
+            // hiding a toolbar. Reserving the space keeps the text perfectly still.
+            val chromeAlpha by animateFloatAsState(
+                targetValue = if (showChrome) 1f else 0f,
+                label = "chromeAlpha",
+            )
+            Column(Modifier.graphicsLayer { alpha = chromeAlpha }) {
+                TopBar(onBack = onBack) {
+                    Box {
+                        IconButton(onClick = { showExport = true }, enabled = showChrome) {
+                            Icon(Icons.Filled.Download, contentDescription = "Export", tint = colors.muted)
                         }
-                        Spacer(Modifier.weight(1f))
-                        Box {
-                            IconButton(onClick = { showExport = true }) {
-                                Icon(Icons.Filled.Download, contentDescription = "Export", tint = colors.muted)
-                            }
-                            DropdownMenu(expanded = showExport, onDismissRequest = { showExport = false }) {
-                                listOf("pdf" to "PDF", "docx" to "Word", "epub" to "EPUB", "markdown" to "Markdown")
-                                    .forEach { (fmt, label) ->
-                                        DropdownMenuItem(
-                                            text = { Text(label) },
-                                            onClick = { showExport = false; actions.exportNote(noteId, fmt) },
-                                        )
-                                    }
-                            }
-                        }
-                        IconButton(onClick = { showToc = true }) {
-                            Icon(Icons.Filled.List, contentDescription = "Contents", tint = colors.muted)
-                        }
-                        IconButton(onClick = { showControls = true }) {
-                            Icon(Icons.Filled.FormatSize, contentDescription = "Text settings", tint = colors.muted)
-                        }
-                        Box {
-                            IconButton(onClick = { showMore = true }) {
-                                Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = colors.muted)
-                            }
-                            DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("Delete note", color = colors.oxblood, fontFamily = SansFamily) },
-                                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(18.dp)) },
-                                    onClick = { showMore = false; confirmDelete = true },
-                                )
-                            }
+                        DropdownMenu(expanded = showExport, onDismissRequest = { showExport = false }) {
+                            listOf("pdf" to "PDF", "docx" to "Word", "epub" to "EPUB", "markdown" to "Markdown")
+                                .forEach { (fmt, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label, style = VerbatimText.body, color = colors.ink) },
+                                        onClick = { showExport = false; actions.exportNote(noteId, fmt) },
+                                    )
+                                }
                         }
                     }
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        color = colors.oxblood,
-                        trackColor = colors.hairline,
-                        modifier = Modifier.fillMaxWidth().height(2.dp),
-                    )
+                    IconButton(onClick = { showToc = true }, enabled = showChrome) {
+                        Icon(Icons.Filled.List, contentDescription = "Contents", tint = colors.muted)
+                    }
+                    IconButton(onClick = { showControls = true }, enabled = showChrome) {
+                        Icon(Icons.Filled.FormatSize, contentDescription = "Text settings", tint = colors.muted)
+                    }
+                    Box {
+                        IconButton(onClick = { showMore = true }, enabled = showChrome) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = colors.muted)
+                        }
+                        DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Delete note", style = VerbatimText.body, color = colors.oxblood) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(18.dp)) },
+                                onClick = { showMore = false; confirmDelete = true },
+                            )
+                        }
+                    }
                 }
+                LinearProgressIndicator(
+                    progress = { progress },
+                    color = colors.oxblood,
+                    trackColor = colors.hairline,
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                )
             }
 
             val note = vm.note
             if (vm.loading && sections.isEmpty()) {
                 ReaderSkeleton()
             } else if (sections.isEmpty()) {
-                // Still being produced (or nothing yet).
-                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        when (note?.status) {
-                            NoteStatus.AWAITING_AUDIO -> "Waiting for your phone to fetch the audio…"
-                            NoteStatus.TRANSCRIBING -> "Transcribing the audio…"
-                            NoteStatus.PROCESSING -> "Writing your note…"
-                            NoteStatus.ERROR -> note.errorMessage ?: "Something went wrong."
-                            else -> "Go online to open this note."
-                        },
-                        fontFamily = SansFamily, fontSize = 15.sp, color = colors.muted,
-                    )
+                // Still being produced (or nothing yet). Says what stage it's at and what happens
+                // next — a lone "Transcribing the audio…" gives no sense of whether to wait or act.
+                val (headline, detail) = when (note?.status) {
+                    NoteStatus.AWAITING_AUDIO ->
+                        "Waiting for your phone" to
+                            "Your phone fetches the audio on its own connection. Keep the app connected and this starts on its own."
+                    NoteStatus.TRANSCRIBING ->
+                        "Transcribing" to
+                            "The audio is being transcribed and split by speaker. Long videos take a few minutes."
+                    NoteStatus.PROCESSING ->
+                        "Writing your note" to "Almost there — laying the transcript out to read."
+                    NoteStatus.ERROR ->
+                        "This note failed" to (note.errorMessage ?: "Something went wrong. Try again from the library.")
+                    else -> "Not downloaded yet" to "Go online once to open this note; it reads offline afterwards."
+                }
+                Column(
+                    Modifier.fillMaxSize().padding(Space.xxxl),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (note?.status != NoteStatus.ERROR) {
+                        CircularProgressIndicator(
+                            color = colors.oxblood,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.height(Space.xl))
+                    }
+                    Text(headline, style = VerbatimText.screenTitle, color = colors.ink, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(Space.sm))
+                    Text(detail, style = VerbatimText.secondary, color = colors.muted, textAlign = TextAlign.Center)
                 }
             } else {
                 LazyColumn(
@@ -222,17 +248,13 @@ fun ReaderScreen(
                     contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
                 ) {
                     item(key = "header") {
-                        Column(Modifier.padding(bottom = 12.dp)) {
-                            Text(
-                                note?.title ?: "",
-                                fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold,
-                                fontSize = 26.sp, lineHeight = 32.sp, color = colors.ink,
-                            )
+                        Column(Modifier.padding(top = Space.sm, bottom = Space.xl)) {
+                            Text(note?.title ?: "", style = VerbatimText.readerTitle, color = colors.ink)
                             note?.channel?.takeIf { it.isNotBlank() }?.let { channel ->
-                                Spacer(Modifier.height(6.dp))
-                                Text(channel, fontFamily = SansFamily, fontSize = 13.sp, color = colors.muted)
+                                Spacer(Modifier.height(Space.sm))
+                                Text(channel, style = VerbatimText.secondary, color = colors.muted)
                             }
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(Space.lg))
                             Box(Modifier.width(40.dp).height(2.dp).background(colors.oxblood))
                         }
                     }
@@ -252,31 +274,38 @@ fun ReaderScreen(
 
         if (showToc) {
             ModalBottomSheet(onDismissRequest = { showToc = false }, containerColor = colors.surface) {
-                Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-                    Text(
-                        "Contents",
-                        fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                        color = colors.muted, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-                    layout.anchors.forEach { anchor ->
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = Space.xxl)) {
+                    SectionLabel("Contents", Modifier.padding(horizontal = Space.gutter, vertical = Space.sm))
+                    // Where the reader currently is, so the sheet opens showing your place instead
+                    // of an undifferentiated list of timestamps.
+                    val currentRow = listState.firstVisibleItemIndex
+                    val activeIndex = layout.anchors.indexOfLast { it.rowIndex <= currentRow }
+                    layout.anchors.forEachIndexed { i, anchor ->
+                        val active = i == activeIndex
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .background(if (active) colors.oxblood.copy(alpha = 0.07f) else colors.surface)
                                 .clickable {
                                     showToc = false
                                     scope.launch { listState.animateScrollToItem(anchor.rowIndex) }
                                 }
-                                .padding(horizontal = 20.dp, vertical = 10.dp),
+                                .padding(horizontal = Space.gutter, vertical = Space.md),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
                                 anchor.label,
-                                fontFamily = MonoFamily, fontSize = 12.sp, color = colors.oxblood,
+                                style = VerbatimText.meta,
+                                color = if (active) colors.oxblood else colors.muted,
                                 modifier = Modifier.width(64.dp),
                             )
                             Text(
                                 anchor.snippet,
-                                fontFamily = ReadFamily, fontSize = 14.sp, color = colors.ink,
+                                fontFamily = ReadFamily,
+                                fontSize = 15.sp,
+                                lineHeight = 20.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                color = colors.ink,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         }
@@ -310,22 +339,23 @@ fun ReaderScreen(
     }
 }
 
-/** One section heading row (its own LazyColumn item so paragraphs can be individually addressed). */
+/**
+ * One section heading row (its own LazyColumn item so paragraphs can be individually addressed).
+ * A hairline rule carries the eye across the measure, so a new 5-minute block reads as a real
+ * division of the text rather than one more line of grey.
+ */
 @Composable
 private fun SectionHeading(section: NoteSection) {
     val colors = VerbatimTheme.colors
     Row(
-        Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp),
+        Modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         section.timestampLabel?.let {
-            Text(it, fontFamily = MonoFamily, fontSize = 11.sp, color = colors.oxblood)
-            Spacer(Modifier.width(8.dp))
+            Text(it, style = VerbatimText.meta, color = colors.oxblood)
+            Spacer(Modifier.width(Space.md))
         }
-        Text(
-            section.heading,
-            fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.muted,
-        )
+        Box(Modifier.weight(1f).height(1.dp).background(colors.hairline))
     }
 }
 
@@ -335,22 +365,20 @@ private fun BlockView(block: NoteBlock, font: ReaderFont, fontSize: Int, showSpe
     val colors = VerbatimTheme.colors
     val bodyFamily = if (font == ReaderFont.SANS) SansFamily else ReadFamily
     val speaker = block.speaker?.takeIf { it.isNotBlank() }
-    Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+    // Extra air above a speaker change so a dialogue reads as turns, not a wall of paragraphs.
+    val topGap = if (showSpeaker && speaker != null) Space.md else 0.dp
+    Column(Modifier.fillMaxWidth().padding(top = topGap, bottom = Space.lg)) {
         if ((showSpeaker && speaker != null) || block.timestamp != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (showSpeaker && speaker != null) {
-                    Text(
-                        speaker,
-                        fontFamily = SansFamily, fontWeight = FontWeight.SemiBold,
-                        fontSize = 12.sp, color = colors.oxblood,
-                    )
-                    Spacer(Modifier.width(8.dp))
+                    Text(speaker, style = VerbatimText.labelStrong, color = colors.oxblood)
+                    Spacer(Modifier.width(Space.sm))
                 }
                 block.timestamp?.let {
-                    Text(it, fontFamily = MonoFamily, fontSize = 10.sp, color = colors.muted)
+                    Text(it, style = VerbatimText.meta, color = colors.muted.copy(alpha = 0.75f))
                 }
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(Space.xs))
         }
         when (block.type) {
             BlockType.QUOTE -> Row {
@@ -448,48 +476,93 @@ private fun parseTimestamp(ts: String?): Int? {
 @Composable
 private fun ControlsSheet(vm: ReaderViewModel) {
     val colors = VerbatimTheme.colors
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("Theme", fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = colors.muted)
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.padding(horizontal = Space.gutter)) {
+        SectionLabel("Theme")
+        Spacer(Modifier.height(Space.md))
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
             ReaderTheme.entries.forEach { t ->
-                val selected = vm.theme == t
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colors.panel)
-                        .then(
-                            if (selected) Modifier.background(colors.oxblood.copy(alpha = 0.14f), RoundedCornerShape(10.dp)) else Modifier,
-                        )
-                        .clickable { vm.theme = t },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        t.label.take(6), fontFamily = SansFamily, fontSize = 11.sp,
-                        color = if (selected) colors.oxblood else colors.muted,
-                    )
-                }
+                ThemeSwatch(t, selected = vm.theme == t, modifier = Modifier.weight(1f)) { vm.chooseTheme(t) }
             }
         }
 
-        Spacer(Modifier.height(20.dp))
-        Text("Typeface", fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = colors.muted)
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FontChoice("Serif", ReadFamily, vm.font == ReaderFont.READ) { vm.font = ReaderFont.READ }
-            FontChoice("Sans", SansFamily, vm.font == ReaderFont.SANS) { vm.font = ReaderFont.SANS }
+        Spacer(Modifier.height(Space.xl))
+        SectionLabel("Typeface")
+        Spacer(Modifier.height(Space.md))
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+            FontChoice("Serif", ReadFamily, vm.font == ReaderFont.READ) { vm.chooseFont(ReaderFont.READ) }
+            FontChoice("Sans", SansFamily, vm.font == ReaderFont.SANS) { vm.chooseFont(ReaderFont.SANS) }
         }
 
-        Spacer(Modifier.height(20.dp))
-        Text("Size · ${vm.fontSize}sp", fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = colors.muted)
-        Slider(
-            value = vm.fontSize.toFloat(),
-            onValueChange = { vm.fontSize = it.toInt() },
-            valueRange = 14f..26f,
-            steps = 11,
-            colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
+        Spacer(Modifier.height(Space.xl))
+        SectionLabel("Size")
+        Spacer(Modifier.height(Space.xs))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("A", style = VerbatimText.secondary, color = colors.muted)
+            Slider(
+                value = vm.fontSize.toFloat(),
+                // Live while dragging, saved once on release — see ReaderViewModel.
+                onValueChange = { vm.previewFontSize(it.toInt()) },
+                onValueChangeFinished = { vm.commitFontSize() },
+                valueRange = 14f..26f,
+                steps = 11,
+                colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
+                modifier = Modifier.weight(1f).padding(horizontal = Space.md),
+            )
+            Text("A", fontFamily = SansFamily, fontSize = 20.sp, color = colors.muted)
+        }
+    }
+}
+
+/**
+ * A theme option that shows the theme itself — its page colour, a line of its ink, and its accent —
+ * instead of a word in the CURRENT theme's colours. Four text-only chips gave no sense of what
+ * "Sepia" or "Contrast" would actually look like, so choosing one was guesswork.
+ */
+@Composable
+private fun ThemeSwatch(
+    theme: ReaderTheme,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val current = VerbatimTheme.colors
+    val preview = colorsFor(theme)
+    val haptics = LocalHapticFeedback.current
+    Column(
+        modifier
+            .clip(Shape.chip)
+            .background(if (selected) current.oxblood.copy(alpha = 0.12f) else current.panel)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) current.oxblood else current.hairline,
+                shape = Shape.chip,
+            )
+            .clickable {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
+            .padding(vertical = Space.sm),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(width = 34.dp, height = 24.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(preview.paper)
+                .border(1.dp, current.hairline, RoundedCornerShape(5.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Box(Modifier.size(width = 18.dp, height = 2.dp).background(preview.ink))
+                Box(Modifier.size(width = 12.dp, height = 2.dp).background(preview.oxblood))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            theme.shortLabel,
+            style = VerbatimText.secondary,
+            color = if (selected) current.oxblood else current.muted,
+            maxLines = 1,
         )
     }
 }
@@ -502,15 +575,24 @@ private fun androidx.compose.foundation.layout.RowScope.FontChoice(
     onClick: () -> Unit,
 ) {
     val colors = VerbatimTheme.colors
+    val haptics = LocalHapticFeedback.current
     Box(
         Modifier
             .weight(1f)
-            .height(48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.panel)
-            .clickable(onClick = onClick),
+            .height(52.dp)
+            .clip(Shape.chip)
+            .background(if (selected) colors.oxblood.copy(alpha = 0.12f) else colors.panel)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) colors.oxblood else colors.hairline,
+                shape = Shape.chip,
+            )
+            .clickable {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontFamily = family, fontSize = 16.sp, color = if (selected) colors.oxblood else colors.ink)
+        Text(label, fontFamily = family, fontSize = 17.sp, color = if (selected) colors.oxblood else colors.ink)
     }
 }

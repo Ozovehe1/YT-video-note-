@@ -20,12 +20,18 @@ data class VerbatimColors(
     val isDark: Boolean,
 )
 
-/** The four reader themes, matching the web `ReaderTheme` union. */
-enum class ReaderTheme(val id: String, val label: String) {
-    PAPER("paper", "Paper"),
-    SEPIA("sepia", "Sepia"),
-    NIGHT("night", "Night"),
-    CONTRAST("contrast", "High-contrast");
+/**
+ * The four reader themes, matching the web `ReaderTheme` union.
+ *
+ * [shortLabel] is what a narrow four-across chip row shows. The chips used to render
+ * `label.take(6)`, which turned "High-contrast" into the nonsense "High-c" — a truncation is never
+ * an acceptable label, so each theme carries a name that already fits.
+ */
+enum class ReaderTheme(val id: String, val label: String, val shortLabel: String) {
+    PAPER("paper", "Paper", "Paper"),
+    SEPIA("sepia", "Sepia", "Sepia"),
+    NIGHT("night", "Night", "Night"),
+    CONTRAST("contrast", "High-contrast", "Contrast");
 
     companion object {
         fun fromId(id: String?): ReaderTheme = entries.firstOrNull { it.id == id } ?: PAPER

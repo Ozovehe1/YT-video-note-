@@ -26,7 +26,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -42,12 +41,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -64,12 +63,11 @@ import com.verbatim.helper.ui.components.EmptyState
 import com.verbatim.helper.ui.components.LibrarySkeleton
 import com.verbatim.helper.ui.components.PullToRefresh
 import com.verbatim.helper.ui.components.StatusPill
-import com.verbatim.helper.ui.components.Wordmark
-import com.verbatim.helper.ui.theme.DisplayFamily
-import com.verbatim.helper.ui.theme.MonoFamily
+import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.SansFamily
 import com.verbatim.helper.ui.theme.Shape
 import com.verbatim.helper.ui.theme.Space
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import com.verbatim.helper.ui.theme.pressScale
 import kotlinx.coroutines.Job
@@ -163,16 +161,10 @@ fun LibraryScreen(
             .safeDrawingPadding(),
     ) {
         Column(Modifier.fillMaxSize()) {
-            // Top bar — brand left; Settings + Refresh right (Settings is now discoverable).
-            Row(
-                Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.sm, top = 14.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Wordmark()
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = { vm.refresh() }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = colors.muted)
-                }
+            // Top bar — brand left; Settings right. Refresh is gone from here: the list now
+            // refreshes itself while notes are processing and pull-to-refresh covers the rest, so a
+            // dedicated button was a third way to do something the user shouldn't have to ask for.
+            TopBar(wordmark = true) {
                 IconButton(onClick = onSettings) {
                     Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = colors.muted)
                 }
@@ -241,31 +233,50 @@ fun LibraryScreen(
     }
 }
 
+/** "1:42:07" / "18:24" — a video's runtime, for the library card. */
+private fun formatRuntime(seconds: Int): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
 @Composable
 private fun DeviceStrip(running: Boolean, status: String, onConnect: () -> Unit, onManage: () -> Unit) {
     val colors = VerbatimTheme.colors
+    val haptics = LocalHapticFeedback.current
+    val source = remember { MutableInteractionSource() }
     val label = if (running) status else "Connect your phone to fetch audio"
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = Space.gutter, vertical = 6.dp)
+            .padding(horizontal = Space.gutter, vertical = Space.sm)
+            .pressScale(source)
             .clip(Shape.pill)
-            .background(colors.panel)
-            .border(1.dp, colors.hairline, Shape.pill)
-            .clickable { if (running) onManage() else onConnect() }
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            // When it's off, the strip is the single most important thing on the screen — nothing
+            // works without it — so it wears the accent instead of blending into the page.
+            .background(if (running) colors.panel else colors.oxblood.copy(alpha = 0.08f))
+            .border(1.dp, if (running) colors.hairline else colors.oxblood.copy(alpha = 0.35f), Shape.pill)
+            .clickable(interactionSource = source, indication = null) {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (running) onManage() else onConnect()
+            }
+            .padding(horizontal = Space.lg, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Dot(on = running)
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(Space.md))
         Text(
             label,
-            fontFamily = SansFamily, fontSize = 12.sp, color = if (running) colors.ink else colors.muted,
+            style = VerbatimText.secondary,
+            color = if (running) colors.ink else colors.oxblood,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
+        Spacer(Modifier.width(Space.sm))
         Text(
             if (running) "Manage" else "Connect",
-            fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = colors.oxblood,
+            style = VerbatimText.labelStrong,
+            color = colors.oxblood,
         )
     }
 }
@@ -290,30 +301,40 @@ private fun NoteCard(note: Note, onClick: () -> Unit, onDelete: () -> Unit) {
                 model = note.thumbnail,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.size(width = 88.dp, height = 58.dp).clip(Shape.thumb),
+                modifier = Modifier
+                    .size(width = 88.dp, height = 58.dp)
+                    .clip(Shape.thumb)
+                    // A tinted bed behind the image, so a thumbnail loading in fades onto a shape
+                    // that was already there instead of punching a white hole in the card.
+                    .background(colors.hairline.copy(alpha = 0.5f)),
             )
             Spacer(Modifier.width(Space.md))
         }
         Column(Modifier.weight(1f)) {
             Text(
                 note.title,
-                fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 16.sp,
-                color = colors.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 20.sp,
+                style = VerbatimText.cardTitle,
+                color = colors.ink,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(5.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     note.channel.ifBlank { "Video" },
-                    fontFamily = SansFamily, fontSize = 12.sp, color = colors.muted,
+                    style = VerbatimText.secondary,
+                    color = colors.muted,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                 )
-                if (note.status == NoteStatus.READY && note.totalSections > 0) {
-                    Spacer(Modifier.width(8.dp))
-                    Text("· ${note.totalSections} sections", fontFamily = MonoFamily, fontSize = 10.sp, color = colors.muted)
+                if (note.status == NoteStatus.READY && note.durationSeconds != null) {
+                    Spacer(Modifier.width(Space.sm))
+                    // Runtime, not section count. "12 sections" is an implementation detail; how
+                    // long the thing is is what someone picking what to read next actually wants.
+                    Text(formatRuntime(note.durationSeconds), style = VerbatimText.meta, color = colors.muted)
                 }
             }
             if (note.status != NoteStatus.READY) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(Space.sm))
                 StatusPill(note)
             }
         }

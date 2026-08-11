@@ -14,6 +14,14 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
+ * Sign-up succeeded but the project requires the user to confirm their email before a session is
+ * issued. Not an error — the account now exists. Carried as a distinct type so the UI can say so
+ * in a neutral voice instead of as a failure.
+ */
+class EmailConfirmationRequired :
+    Exception("Account created. Check your email to confirm it, then sign in.")
+
+/**
  * A thin, dependency-light Supabase client over OkHttp — GoTrue auth (password sign-in/up + token
  * refresh) and PostgREST reads, with the RLS session token attached. Deliberately hand-rolled
  * instead of the supabase-kt SDK to keep the dependency/version surface small and the build
@@ -64,10 +72,11 @@ class SupabaseClient(private val session: SessionStore) {
                     val refresh = s.refreshToken
                     if (access == null || refresh == null) {
                         // Server accepted the sign-up but returned no session → email confirmation
-                        // is enabled. The account exists; the user just needs to confirm it.
-                        return@withContext Result.failure(
-                            Exception("Account created. Check your email to confirm it, then sign in."),
-                        )
+                        // is enabled. The account exists; the user just needs to confirm it. This
+                        // gets its own exception type because it is GOOD news travelling down the
+                        // failure path — the UI rendered it in error red next to a form that looked
+                        // like it had rejected them, when in fact their account had just been made.
+                        return@withContext Result.failure(EmailConfirmationRequired())
                     }
                     val uid = s.user?.id
                         ?: return@withContext Result.failure(Exception("Signed in, but no account id came back."))

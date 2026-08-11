@@ -12,7 +12,9 @@ import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.data.model.Note
 import com.verbatim.helper.data.model.NoteSection
 import com.verbatim.helper.data.model.NoteStatus
+import com.verbatim.helper.data.model.Profile
 import com.verbatim.helper.data.model.ReaderFont
+import com.verbatim.helper.data.model.ReadingWidth
 import com.verbatim.helper.ui.theme.ReaderTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -31,10 +33,19 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
     var loading by mutableStateOf(true)
         private set
 
-    // Live reader settings (seeded from the profile; changed from the controls sheet).
+    // Live reader settings (seeded from the profile; changed from the controls sheet). The setters
+    // are private so every change goes through the choose*/commit* methods below and is saved —
+    // these used to be freely assignable, which meant picking Night or nudging the text size
+    // applied instantly and then silently reverted the next time the note was opened.
     var theme by mutableStateOf(ReaderTheme.PAPER)
+        private set
     var font by mutableStateOf(ReaderFont.READ)
+        private set
     var fontSize by mutableStateOf(18)
+        private set
+
+    /** Carried so persisting a reader change doesn't clobber the width chosen in Settings. */
+    private var readingWidth: ReadingWidth = ReadingWidth.DEFAULT
 
     var initialSection by mutableStateOf(0)
         private set
@@ -46,13 +57,13 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
             // 1) instant from cache
             note = repo.cachedNote(noteId)
             sections = repo.cachedSections(noteId)
-            repo.cachedProfile()?.let { applyProfile(it.defaultTheme, it.fontFamily, it.fontSize) }
+            repo.cachedProfile()?.let { applyProfile(it) }
             initialSection = repo.cachedProgress(noteId)?.lastSectionIndex ?: 0
             if (note != null) loading = false
 
             // 2) refresh from network (best-effort)
             repo.refreshProfile()
-            repo.cachedProfile()?.let { applyProfile(it.defaultTheme, it.fontFamily, it.fontSize) }
+            repo.cachedProfile()?.let { applyProfile(it) }
             repo.refreshProgress(noteId)
             initialSection = repo.cachedProgress(noteId)?.lastSectionIndex ?: initialSection
             repo.refreshNote(noteId)
@@ -64,11 +75,29 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
         }
     }
 
-    private fun applyProfile(themeId: String, fontFamily: ReaderFont, size: Int) {
-        theme = ReaderTheme.fromId(themeId)
-        font = fontFamily
-        fontSize = size
+    private fun applyProfile(profile: Profile) {
+        theme = ReaderTheme.fromId(profile.defaultTheme)
+        font = profile.fontFamily
+        fontSize = profile.fontSize
+        readingWidth = profile.readingWidth
     }
+
+    /**
+     * Save the reader's appearance to the user's profile, so it survives leaving the note and
+     * follows them to every other note (and the Settings screen shows the same values).
+     */
+    private fun persist() {
+        viewModelScope.launch { repo.updateProfile(theme.id, font.id, fontSize, readingWidth.id) }
+    }
+
+    fun chooseTheme(value: ReaderTheme) { theme = value; persist() }
+
+    fun chooseFont(value: ReaderFont) { font = value; persist() }
+
+    /** Live while dragging; [commitFontSize] writes it once on release. */
+    fun previewFontSize(value: Int) { fontSize = value }
+
+    fun commitFontSize() = persist()
 
     /**
      * While the note is still being produced, re-pull it so the reader fills in on its own.

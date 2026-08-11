@@ -1,6 +1,12 @@
 package com.verbatim.helper.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,12 +40,10 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.Space
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import kotlin.math.roundToInt
@@ -50,21 +54,34 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text.uppercase(),
         modifier = modifier,
-        fontFamily = SansFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 11.sp,
-        letterSpacing = 1.2.sp,
+        style = VerbatimText.overline,
         color = VerbatimTheme.colors.muted,
     )
 }
 
-/** A colored status dot (filled when active/on, hollow-muted when off). */
+/**
+ * A status dot — filled and slowly breathing when live, flat and muted when off.
+ *
+ * The pulse is the point: the downloader runs in the background with no other visible sign of life,
+ * and a static dot can't distinguish "connected and working" from "a red circle we drew once".
+ */
 @Composable
 fun Dot(on: Boolean, modifier: Modifier = Modifier) {
     val colors = VerbatimTheme.colors
+    val transition = rememberInfiniteTransition(label = "dot")
+    val pulse by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.45f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "dot-pulse",
+    )
     Box(
         modifier
             .size(9.dp)
+            .graphicsLayer { alpha = if (on) pulse else 1f }
             .clip(CircleShape)
             .background(if (on) colors.oxblood else colors.muted.copy(alpha = 0.4f)),
     )
@@ -93,9 +110,9 @@ fun EmptyState(
             Icon(icon, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(30.dp))
         }
         Spacer(Modifier.height(Space.lg))
-        Text(title, fontFamily = com.verbatim.helper.ui.theme.DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 21.sp, color = colors.ink, textAlign = TextAlign.Center)
+        Text(title, style = VerbatimText.screenTitle, color = colors.ink, textAlign = TextAlign.Center)
         Spacer(Modifier.height(Space.sm))
-        Text(subtitle, fontFamily = SansFamily, fontSize = 14.sp, color = colors.muted, textAlign = TextAlign.Center, lineHeight = 20.sp)
+        Text(subtitle, style = VerbatimText.body, color = colors.muted, textAlign = TextAlign.Center)
         if (actionText != null && onAction != null) {
             Spacer(Modifier.height(Space.xl))
             PrimaryButton(actionText, onAction)
@@ -118,16 +135,16 @@ fun ConfirmDialog(
         containerColor = colors.surface,
         titleContentColor = colors.ink,
         textContentColor = colors.muted,
-        title = { Text(title, fontFamily = com.verbatim.helper.ui.theme.DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 19.sp) },
-        text = { Text(message, fontFamily = SansFamily, fontSize = 14.sp, lineHeight = 20.sp) },
+        title = { Text(title, style = VerbatimText.screenTitle) },
+        text = { Text(message, style = VerbatimText.body) },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text(confirmText, fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, color = colors.oxblood)
+                Text(confirmText, style = VerbatimText.action, color = colors.oxblood)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", fontFamily = SansFamily, color = colors.muted)
+                Text("Cancel", style = VerbatimText.action, color = colors.muted)
             }
         },
     )

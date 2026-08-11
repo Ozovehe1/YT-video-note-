@@ -1,11 +1,15 @@
 package com.verbatim.helper.ui.theme
 
+import android.app.Activity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 /**
  * Verbatim uses a CUSTOM design system (the Broadsheet tokens) layered over Material3. Components
@@ -51,6 +55,27 @@ fun VerbatimTheme(
             onSurfaceVariant = colors.muted,
             outline = colors.hairline,
         )
+    }
+
+    // Match the status/navigation bar icons to the theme being painted behind them. The app draws
+    // edge-to-edge, so without this the icons keep whatever tint the SYSTEM picked: open the reader
+    // in Night on a light-mode phone and the clock and battery are dark grey on a near-black bar —
+    // invisible. Restoring on dispose is what makes the reader's nested theme behave: leaving it
+    // hands the bars back to the theme underneath instead of stranding them in the reader's.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        DisposableEffect(colors.isDark) {
+            val window = (view.context as? Activity)?.window
+            val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+            val previousStatus = controller?.isAppearanceLightStatusBars
+            val previousNav = controller?.isAppearanceLightNavigationBars
+            controller?.isAppearanceLightStatusBars = !colors.isDark
+            controller?.isAppearanceLightNavigationBars = !colors.isDark
+            onDispose {
+                previousStatus?.let { controller?.isAppearanceLightStatusBars = it }
+                previousNav?.let { controller?.isAppearanceLightNavigationBars = it }
+            }
+        }
     }
 
     CompositionLocalProvider(LocalVerbatimColors provides colors) {

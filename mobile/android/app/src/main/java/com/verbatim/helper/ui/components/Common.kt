@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import com.verbatim.helper.data.model.Note
 import com.verbatim.helper.data.model.NoteStatus
 import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
 
 /** The small letter-spaced wordmark used across the app. */
@@ -56,18 +57,16 @@ fun StatusPill(note: Note) {
         Box(
             Modifier
                 .background(colors.oxblood.copy(alpha = 0.10f), RoundedCornerShape(999.dp))
-                .padding(horizontal = 10.dp, vertical = 4.dp),
+                .padding(horizontal = 11.dp, vertical = 5.dp),
         ) {
-            Text(label, fontFamily = SansFamily, fontWeight = FontWeight.Medium, fontSize = 11.sp, color = colors.oxblood)
+            Text(label, style = VerbatimText.labelStrong, color = colors.oxblood)
         }
         if (reason != null) {
             Spacer(Modifier.height(4.dp))
             Text(
                 reason,
-                fontFamily = SansFamily,
-                fontSize = 11.sp,
+                style = VerbatimText.secondary,
                 color = colors.muted,
-                lineHeight = 14.sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )

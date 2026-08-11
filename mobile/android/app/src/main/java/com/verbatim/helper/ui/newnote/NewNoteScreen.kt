@@ -19,11 +19,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -41,29 +40,32 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.data.model.SearchResult
+import com.verbatim.helper.ui.components.EmptyState
 import com.verbatim.helper.ui.components.PrimaryButton
-import com.verbatim.helper.ui.theme.DisplayFamily
-import com.verbatim.helper.ui.theme.MonoFamily
-import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.Shape
+import com.verbatim.helper.ui.theme.Space
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import com.verbatim.helper.ui.theme.pressScale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = VerbatimRepository.get(app)
 
     var query by mutableStateOf("")
+        private set
     var results by mutableStateOf<List<SearchResult>>(emptyList())
         private set
     var loading by mutableStateOf(false)
@@ -72,22 +74,61 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var error by mutableStateOf<String?>(null)
         private set
+    /** True once a search has actually returned, so "no results" isn't shown before searching. */
+    var searched by mutableStateOf(false)
+        private set
+
+    private var searchJob: Job? = null
 
     val looksLikeLink: Boolean
         get() = query.trim().let { it.contains("youtu", true) || it.startsWith("http", true) }
 
+    /**
+     * Search as the user types, debounced.
+     *
+     * Search previously only ran on an explicit tap or keyboard action, which on a search-first
+     * screen means most people type a title and then sit looking at an empty page wondering what
+     * they missed. Typing is the trigger now; the debounce is what keeps that from spending a
+     * YouTube API quota unit per keystroke.
+     */
+    fun onQueryChange(value: String) {
+        query = value
+        searchJob?.cancel()
+        val q = value.trim()
+        if (q.isEmpty() || looksLikeLink) {
+            // A pasted link isn't a search term — the Create button handles it.
+            results = emptyList(); searched = false; loading = false
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            performSearch(q)
+        }
+    }
+
+    /** Search now — the keyboard's Search action, which shouldn't wait out the debounce. */
     fun runSearch() {
         val q = query.trim()
         if (q.isEmpty()) return
-        viewModelScope.launch {
-            loading = true; error = null
-            try {
-                results = repo.search(q).results
-            } catch (e: Exception) {
-                error = "Search failed — check your connection."
-            }
-            loading = false
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch { performSearch(q) }
+    }
+
+    /**
+     * The actual request. Deliberately does NOT touch searchJob: it runs INSIDE that job, so
+     * cancelling from here would cancel the very coroutine doing the work.
+     */
+    private suspend fun performSearch(q: String) {
+        loading = true; error = null
+        try {
+            results = repo.search(q).results
+            searched = true
+        } catch (e: CancellationException) {
+            throw e // a newer keystroke superseded this search; leave the state to the new job
+        } catch (e: Exception) {
+            error = "Search failed — check your connection."
         }
+        loading = false
     }
 
     fun create(input: String, onCreated: (String) -> Unit) {
@@ -99,6 +140,10 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
                 .onFailure { error = it.message ?: "Couldn't create the note." }
             creating = false
         }
+    }
+
+    private companion object {
+        const val SEARCH_DEBOUNCE_MS = 400L
     }
 }
 
@@ -114,26 +159,32 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
     Column(
         Modifier.fillMaxSize().background(colors.paper).safeDrawingPadding(),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
-            }
-            Text("New note", fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = colors.ink)
-        }
+        TopBar(title = "New note", onBack = onBack)
 
-        Column(Modifier.padding(horizontal = 20.dp)) {
+        Column(Modifier.padding(horizontal = Space.gutter)) {
             OutlinedTextField(
                 value = vm.query,
-                onValueChange = { vm.query = it },
-                placeholder = { Text("Search a title or paste a link", color = colors.muted) },
+                onValueChange = { vm.onQueryChange(it) },
+                placeholder = { Text("Search a title or paste a link", style = VerbatimText.body, color = colors.muted) },
+                textStyle = VerbatimText.body.copy(color = colors.ink),
                 singleLine = true,
+                shape = Shape.button,
                 colors = fieldColors,
+                leadingIcon = {
+                    Icon(Icons.Filled.Search, contentDescription = null, tint = colors.muted)
+                },
                 trailingIcon = {
-                    IconButton(onClick = { vm.runSearch() }) {
-                        Icon(Icons.Filled.Search, contentDescription = "Search", tint = colors.oxblood)
+                    // A spinner in the field is the honest place for search progress — it says
+                    // "this box is working" without covering the results you're already reading.
+                    if (vm.loading) {
+                        CircularProgressIndicator(
+                            color = colors.oxblood, strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else if (vm.query.isNotEmpty()) {
+                        IconButton(onClick = { vm.onQueryChange("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear", tint = colors.muted)
+                        }
                     }
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -142,7 +193,7 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
             )
 
             if (vm.looksLikeLink) {
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(Space.md))
                 PrimaryButton(
                     text = "Create note from link",
                     onClick = { vm.create(vm.query.trim(), onCreated) },
@@ -152,24 +203,39 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
             }
 
             vm.error?.let {
-                Spacer(Modifier.height(10.dp))
-                Text(it, color = colors.oxblood, fontFamily = SansFamily, fontSize = 13.sp)
+                Spacer(Modifier.height(Space.md))
+                Text(it, style = VerbatimText.secondary, color = colors.oxblood)
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.sm))
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(vm.results, key = { it.videoId }) { r ->
-                    ResultRow(r) { vm.create("https://www.youtube.com/watch?v=${r.videoId}", onCreated) }
+            when {
+                // Creating is the one state worth blocking on: we're about to navigate away.
+                vm.creating -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = colors.oxblood, strokeWidth = 2.dp)
+                        Spacer(Modifier.height(Space.lg))
+                        Text("Creating your note…", style = VerbatimText.secondary, color = colors.muted)
+                    }
                 }
-            }
-            if (vm.loading || vm.creating) {
-                Box(Modifier.fillMaxSize().background(colors.paper.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = colors.oxblood, strokeWidth = 2.dp)
+                vm.results.isEmpty() && vm.searched && !vm.loading -> EmptyState(
+                    icon = Icons.Filled.Search,
+                    title = "No videos found",
+                    subtitle = "Try different words, or paste the video's link instead.",
+                )
+                vm.results.isEmpty() && !vm.looksLikeLink -> EmptyState(
+                    icon = Icons.Filled.Search,
+                    title = "Find something to read",
+                    subtitle = "Search by title — or paste a YouTube link and we'll take it from there.",
+                )
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
+                    verticalArrangement = Arrangement.spacedBy(Space.md),
+                ) {
+                    items(vm.results, key = { it.videoId }) { r ->
+                        ResultRow(r) { vm.create("https://www.youtube.com/watch?v=${r.videoId}", onCreated) }
+                    }
                 }
             }
         }
@@ -187,17 +253,20 @@ private fun ResultRow(r: SearchResult, onClick: () -> Unit) {
     ) {
         AsyncImage(
             model = r.thumbnail, contentDescription = null, contentScale = ContentScale.Crop,
-            modifier = Modifier.size(width = 84.dp, height = 56.dp).clip(RoundedCornerShape(8.dp)),
+            modifier = Modifier
+                .size(width = 88.dp, height = 58.dp)
+                .clip(Shape.thumb)
+                .background(colors.hairline.copy(alpha = 0.5f)),
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(Space.md))
         Column(Modifier.weight(1f)) {
-            Text(r.title, fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 19.sp)
-            Spacer(Modifier.height(4.dp))
+            Text(r.title, style = VerbatimText.cardTitle, color = colors.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(5.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(r.channel, fontFamily = SansFamily, fontSize = 12.sp, color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(r.channel, style = VerbatimText.secondary, color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 r.durationLabel?.let {
-                    Spacer(Modifier.width(8.dp))
-                    Text(it, fontFamily = MonoFamily, fontSize = 11.sp, color = colors.oxblood)
+                    Spacer(Modifier.width(Space.sm))
+                    Text(it, style = VerbatimText.meta, color = colors.muted)
                 }
             }
         }

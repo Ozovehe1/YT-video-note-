@@ -21,11 +21,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.verbatim.helper.ui.theme.Shape
-import com.verbatim.helper.ui.theme.SansFamily
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import com.verbatim.helper.ui.theme.pressScale
 
@@ -45,14 +45,18 @@ fun PrimaryButton(
 ) {
     val colors = VerbatimTheme.colors
     val source = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
     val active = enabled && !loading
     Box(
         modifier
             .pressScale(source)
             .clip(Shape.button)
             .background(if (active) colors.oxblood else colors.oxblood.copy(alpha = 0.5f))
-            .clickable(interactionSource = source, indication = null, enabled = active, onClick = onClick)
-            .padding(vertical = 15.dp, horizontal = 20.dp),
+            .clickable(interactionSource = source, indication = null, enabled = active) {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
+            .padding(vertical = 16.dp, horizontal = 22.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (loading) {
@@ -63,7 +67,7 @@ fun PrimaryButton(
                     Icon(icon, contentDescription = null, tint = colors.paper, modifier = Modifier.height(18.dp))
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(text, fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = colors.paper)
+                Text(text, style = VerbatimText.action, color = colors.paper)
             }
         }
     }
@@ -78,6 +82,7 @@ fun SecondaryButton(
 ) {
     val colors = VerbatimTheme.colors
     val source = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
     val fg = if (danger) colors.oxblood else colors.ink
     Box(
         modifier
@@ -85,10 +90,13 @@ fun SecondaryButton(
             .clip(Shape.button)
             .background(colors.panel)
             .border(1.dp, colors.hairline, Shape.button)
-            .clickable(interactionSource = source, indication = null, onClick = onClick)
-            .padding(vertical = 14.dp, horizontal = 20.dp),
+            .clickable(interactionSource = source, indication = null) {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
+            .padding(vertical = 15.dp, horizontal = 22.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, fontFamily = SansFamily, fontWeight = FontWeight.Medium, fontSize = 15.sp, color = fg)
+        Text(text, style = VerbatimText.action, color = fg)
     }
 }

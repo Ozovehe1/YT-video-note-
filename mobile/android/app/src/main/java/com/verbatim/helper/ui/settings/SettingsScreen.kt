@@ -3,6 +3,8 @@ package com.verbatim.helper.ui.settings
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,12 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -33,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
@@ -48,12 +44,13 @@ import com.verbatim.helper.ui.components.Dot
 import com.verbatim.helper.ui.components.PrimaryButton
 import com.verbatim.helper.ui.components.SecondaryButton
 import com.verbatim.helper.ui.components.SectionLabel
-import com.verbatim.helper.ui.components.Wordmark
+import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.ReadFamily
 import com.verbatim.helper.ui.theme.ReaderTheme
 import com.verbatim.helper.ui.theme.SansFamily
 import com.verbatim.helper.ui.theme.Shape
 import com.verbatim.helper.ui.theme.Space
+import com.verbatim.helper.ui.theme.VerbatimText
 import com.verbatim.helper.ui.theme.VerbatimTheme
 import kotlinx.coroutines.launch
 
@@ -115,33 +112,25 @@ fun SettingsScreen(
             .safeDrawingPadding()
             .verticalScroll(rememberScrollState()),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.ink)
-            }
-            Wordmark()
-        }
+        TopBar(title = "Settings", onBack = onBack)
 
         Column(Modifier.padding(horizontal = Space.gutter)) {
             // ---- Reader defaults ----
             SectionLabel("Reader defaults", Modifier.padding(top = Space.md, bottom = Space.md))
             Card {
                 Label("Theme")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), modifier = Modifier.fillMaxWidth()) {
                     ReaderTheme.entries.forEach { t ->
-                        Chip(t.label.take(6), vm.theme == t, Modifier.weight(1f)) { vm.chooseTheme(t) }
+                        Chip(t.shortLabel, vm.theme == t, Modifier.weight(1f)) { vm.chooseTheme(t) }
                     }
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(Space.xl))
                 Label("Typeface")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), modifier = Modifier.fillMaxWidth()) {
                     TypeChip("Serif", ReadFamily, vm.font == ReaderFont.READ, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.READ) }
                     TypeChip("Sans", SansFamily, vm.font == ReaderFont.SANS, Modifier.weight(1f)) { vm.chooseFont(ReaderFont.SANS) }
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(Space.xl))
                 Label("Size · ${vm.size}sp")
                 Slider(
                     value = vm.size.toFloat(),
@@ -151,9 +140,9 @@ fun SettingsScreen(
                     steps = 11,
                     colors = SliderDefaults.colors(thumbColor = colors.oxblood, activeTrackColor = colors.oxblood, inactiveTrackColor = colors.hairline),
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(Space.lg))
                 Label("Reading width")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), modifier = Modifier.fillMaxWidth()) {
                     ReadingWidth.entries.forEach { w ->
                         Chip(w.id.replaceFirstChar { it.uppercase() }, vm.width == w, Modifier.weight(1f)) { vm.chooseWidth(w) }
                     }
@@ -165,19 +154,20 @@ fun SettingsScreen(
             Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Dot(on = device.running)
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(Space.md))
                     Column(Modifier.weight(1f)) {
                         Text(
                             if (device.running) "Connected" else "Not connected",
-                            fontFamily = SansFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = colors.ink,
+                            style = VerbatimText.labelStrong, color = colors.ink,
                         )
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             if (device.running) device.status else "Your phone downloads audio on its own residential connection.",
-                            fontFamily = SansFamily, fontSize = 12.sp, color = colors.muted,
+                            style = VerbatimText.secondary, color = colors.muted,
                         )
                     }
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(Space.lg))
                 if (device.running) {
                     SecondaryButton("Stop", onClick = actions.stopDevice, danger = true, modifier = Modifier.fillMaxWidth())
                 } else {
@@ -210,37 +200,67 @@ private fun Card(content: @Composable androidx.compose.foundation.layout.ColumnS
 @Composable
 private fun Label(text: String) {
     Text(
-        text, fontFamily = SansFamily, fontSize = 12.sp, color = VerbatimTheme.colors.muted,
-        modifier = Modifier.padding(bottom = 8.dp),
+        text,
+        style = VerbatimText.labelStrong,
+        color = VerbatimTheme.colors.ink,
+        modifier = Modifier.padding(bottom = Space.md),
     )
 }
 
+/**
+ * A selectable chip. Selection is carried by BOTH a tint and a border — the old version changed
+ * only the fill, which on the Paper theme meant an unselected chip was pure white on cream and read
+ * as the selected one. A border also matches the cards around it instead of floating.
+ */
 @Composable
 private fun Chip(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val colors = VerbatimTheme.colors
+    val haptics = LocalHapticFeedback.current
     Box(
         modifier
-            .height(44.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.surface)
-            .clickable(onClick = onClick),
+            .height(46.dp)
+            .clip(Shape.chip)
+            .background(if (selected) colors.oxblood.copy(alpha = 0.12f) else colors.surface)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) colors.oxblood else colors.hairline,
+                shape = Shape.chip,
+            )
+            .clickable {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontFamily = SansFamily, fontSize = 12.sp, color = if (selected) colors.oxblood else colors.muted)
+        Text(
+            label,
+            style = VerbatimText.secondary,
+            color = if (selected) colors.oxblood else colors.muted,
+            maxLines = 1,
+        )
     }
 }
 
 @Composable
 private fun TypeChip(label: String, family: FontFamily, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val colors = VerbatimTheme.colors
+    val haptics = LocalHapticFeedback.current
     Box(
         modifier
-            .height(48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.oxblood.copy(alpha = 0.14f) else colors.surface)
-            .clickable(onClick = onClick),
+            .height(52.dp)
+            .clip(Shape.chip)
+            .background(if (selected) colors.oxblood.copy(alpha = 0.12f) else colors.surface)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) colors.oxblood else colors.hairline,
+                shape = Shape.chip,
+            )
+            .clickable {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontFamily = family, fontSize = 16.sp, color = if (selected) colors.oxblood else colors.ink)
+        Text(label, fontFamily = family, fontSize = 17.sp, color = if (selected) colors.oxblood else colors.ink)
     }
 }
