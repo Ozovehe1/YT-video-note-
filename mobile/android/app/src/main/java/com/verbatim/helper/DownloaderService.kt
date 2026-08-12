@@ -196,7 +196,28 @@ class DownloaderService : Service() {
         request.addOption("--format-sort", "+abr,+size")
         request.addOption("--max-filesize", "150M")
         request.addOption("--no-playlist")
-        request.addOption("--retries", "5")
+
+        // --- Anti-bot hardening (NO login) ---
+        // YouTube 429s the download when the request looks like a bot — worse from a distrusted IP
+        // (VPN / shared mobile CGNAT). Per the Apify anti-scraping playbook, make yt-dlp blend in as a
+        // real client instead of signing in: hit the less-guarded mobile/TV APIs, send real-user HTTP,
+        // retry with exponential backoff, and pace like a human. Deliberately no cookies/login.
+        //
+        // player_client=ios,tv hits YouTube's mobile/TV endpoints, which are far less protected than the
+        // web/android ones; formats=missing_pot keeps formats usable when a PO token is absent instead of
+        // hard-failing.
+        request.addOption("--extractor-args", "youtube:player_client=default,ios,tv,web_safari;formats=missing_pot")
+        request.addOption("--user-agent", MOBILE_UA)
+        request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
+        // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
+        request.addOption("--retries", "10")
+        request.addOption("--extractor-retries", "10")
+        request.addOption("--fragment-retries", "10")
+        request.addOption("--retry-sleep", "http:exp=1:120")
+        // Slow, randomized pacing so we don't look like a bot hammering at a constant rate.
+        request.addOption("--sleep-requests", "1")
+        request.addOption("--min-sleep-interval", "1")
+        request.addOption("--max-sleep-interval", "5")
         // Transcode to compact 16 kHz mono AAC (bundled ffmpeg) BEFORE upload. The ASR side
         // downsamples to 16 kHz mono anyway, so this loses no transcription quality, but it keeps
         // the file under Supabase's 50 MB free-plan upload cap (a 413 there forces an endless
@@ -317,6 +338,10 @@ class DownloaderService : Service() {
         private const val POLL_SECONDS = 20L
         /** Publish download progress at most every N percent (see downloadAudio). */
         private const val PROGRESS_STEP_PERCENT = 5
+        /** A current mobile-Chrome User-Agent so yt-dlp's requests look like a real phone browser. */
+        private const val MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/126.0.0.0 Mobile Safari/537.36"
         private val JSON = "application/json".toMediaType()
     }
 }
