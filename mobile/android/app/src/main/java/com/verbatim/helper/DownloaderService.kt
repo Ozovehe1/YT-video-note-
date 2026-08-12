@@ -91,14 +91,29 @@ class DownloaderService : Service() {
         Prefs.setRunning(this@DownloaderService, true)
 
         // Wait for youtubedl-android to finish unpacking, then pull the NIGHTLY yt-dlp so
-        // YouTube's frequent changes don't break downloads (biggest reliability lever).
+        // YouTube's frequent changes don't break downloads (biggest reliability lever). The library's
+        // BUNDLED yt-dlp is months old, so if this update silently fails the app runs a stale extractor
+        // that today's YouTube 429s on EVERY network — retry it, and surface the resulting version so the
+        // running yt-dlp date is visible in the app (a phone-only user can't read logcat).
         setStatus("Preparing…")
         while (!VerbatimApp.ready) delay(1000)
-        try {
-            YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
-        } catch (e: Exception) {
-            Log.w(VerbatimApp.TAG, "yt-dlp self-update skipped: ${e.message}")
+        setStatus("Updating yt-dlp…")
+        var updated = false
+        for (attempt in 1..3) {
+            try {
+                YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
+                updated = true
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(VerbatimApp.TAG, "yt-dlp self-update attempt $attempt failed: ${e.message}")
+                delay(attempt * 2000L)
+            }
         }
+        val ytdlpVersion = runCatching { YoutubeDL.getInstance().version(applicationContext) }.getOrNull()
+        Log.e(VerbatimApp.TAG, "yt-dlp version=$ytdlpVersion (update ${if (updated) "ok" else "FAILED"})")
+        setStatus("Ready · yt-dlp ${ytdlpVersion ?: "unknown"}${if (updated) "" else " (update failed)"}")
 
         setStatus("Polling…")
         // isActive comes from the coroutine's own context, so cancelling the scope ends the loop
@@ -177,9 +192,12 @@ class DownloaderService : Service() {
             // error, or "produced no audio file". Also logged and reported to the server, which now
             // keeps it on the note so the reason is visible in the library too.
             Log.e(VerbatimApp.TAG, "job $noteId failed", e)
-            val reason = (e.message ?: e.javaClass.simpleName).replace("\n", " ").trim()
-            reportError(base, token, noteId, reason)
-            setStatus("Couldn't finish “$title”: ${reason.take(180)}")
+            // Keep the FULL yt-dlp error (with -v the trace names the exact failing step/client/version).
+            // Truncating to 180 chars hid the real cause; show the TAIL, where yt-dlp prints the actual
+            // "ERROR:" line, in the expandable notification and on the note.
+            val full = (e.message ?: e.javaClass.simpleName).trim()
+            reportError(base, token, noteId, full.takeLast(600))
+            setStatus("Couldn't finish “$title”:\n${full.takeLast(700)}")
         } finally {
             workDir.deleteRecursively()
         }
@@ -193,9 +211,12 @@ class DownloaderService : Service() {
         // (~130 kbps). Speech ASR at 16 kHz mono needs nothing more, so this cuts the download by
         // ~2-3× (a 1.5 h podcast: ~32 MB vs ~88 MB) — the main mobile-data saver. `--max-filesize`
         // is a runaway guard so a pathological stream can't silently devour data.
-        request.addOption("--format-sort", "+abr,+size")
+        // Prefer HLS (m3u8) audio: HLS streams currently need NO PO token, so they download without login
+        // even when YouTube gates the progressive streams (the ios/tv clients below serve HLS).
+        request.addOption("--format-sort", "proto:m3u8,+abr,+size")
         request.addOption("--max-filesize", "150M")
         request.addOption("--no-playlist")
+        request.addOption("-v") // verbose: full extractor trace so the real failure/version is visible
 
         // --- Anti-bot hardening (NO login) ---
         // YouTube 429s the download when the request looks like a bot — worse from a distrusted IP
@@ -206,7 +227,7 @@ class DownloaderService : Service() {
         // player_client=ios,tv hits YouTube's mobile/TV endpoints, which are far less protected than the
         // web/android ones; formats=missing_pot keeps formats usable when a PO token is absent instead of
         // hard-failing.
-        request.addOption("--extractor-args", "youtube:player_client=default,ios,tv,web_safari;formats=missing_pot")
+        request.addOption("--extractor-args", "youtube:player_client=ios,tv,web_safari;formats=missing_pot")
         request.addOption("--user-agent", MOBILE_UA)
         request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
         // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
