@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
+import { generateHeadings } from "@/lib/headings";
 import { kickModalAsr, originFrom, getAudioPath, getAsrAttempts, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
@@ -98,10 +99,16 @@ export async function POST(request: Request) {
   // Idempotent (in case the callback is retried): clear any prior sections first.
   await admin.from("note_sections").delete().eq("note_id", noteId);
 
+  // Ask for a heading per section. Purely a navigation aid: the model sees a short excerpt and
+  // returns only labels, never touching the transcript, which stays assembled deterministically
+  // from the ASR output. Returns null on a missing key or ANY failure, in which case the sections
+  // keep their "12:00 – 17:00" time ranges and the note completes exactly as before.
+  const generated = await generateHeadings(sections);
+
   const rows = sections.map((s, i) => ({
     note_id: noteId,
     order_index: i,
-    heading: s.heading,
+    heading: generated?.[i] || s.heading,
     timestamp_label: s.timestamp_label,
     content: s.content,
   }));
