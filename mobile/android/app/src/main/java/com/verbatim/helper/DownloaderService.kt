@@ -234,8 +234,9 @@ class DownloaderService : Service() {
             // Truncating to 180 chars hid the real cause; show the TAIL, where yt-dlp prints the actual
             // "ERROR:" line, in the expandable notification and on the note.
             val full = (e.message ?: e.javaClass.simpleName).trim()
-            reportError(base, token, noteId, full.takeLast(600))
-            setStatus("Couldn't finish “$title”:\n${full.takeLast(700)}")
+            val summary = summarizeFailure(full)
+            reportError(base, token, noteId, summary)
+            setStatus("Couldn't finish “$title”:\n$summary")
         } finally {
             workDir.deleteRecursively()
         }
@@ -419,6 +420,36 @@ class DownloaderService : Service() {
         // coroutineScope block's value, not a `return` — a bare return isn't legal inside a lambda.
         candidates.firstOrNull { it.extension.equals("m4a", ignoreCase = true) }
             ?: candidates.maxByOrNull { it.length() }!!
+    }
+
+    /**
+     * Reduce a yt-dlp failure to the line that actually names it.
+     *
+     * With -v on, a network failure prints a full Python traceback. Reporting the tail of that put
+     * three frames of `_urllib.py`/`common.py` paths on the notification and pushed the one useful
+     * line — yt-dlp's own `ERROR:` summary, which sits at the very end — past what a notification
+     * will display. Frames say where the code was; only that last line says what went wrong.
+     *
+     * Preference order: yt-dlp's ERROR line, then a Python exception line ("...Error: message"),
+     * then the last line that isn't a stack frame, then the raw tail as a last resort.
+     */
+    private fun summarizeFailure(raw: String): String {
+        val lines = raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val isFrame = { l: String -> l.startsWith("File \"") || l.startsWith("^") || l.startsWith("Traceback") }
+        val exceptionLine = Regex("""^[A-Za-z_][\w.]*(Error|Exception)\b.*""")
+
+        val picked = lines.lastOrNull { it.startsWith("ERROR:") }
+            ?: lines.lastOrNull { exceptionLine.matches(it) }
+            ?: lines.lastOrNull { !isFrame(it) && !it.startsWith("return ") }
+            ?: raw.takeLast(300)
+
+        // Strip the app's private-storage path so the message reads as a reason, not a filesystem
+        // tour, and keep some following context in case the reason spans two lines.
+        val from = lines.indexOf(picked).coerceAtLeast(0)
+        return lines.drop(from).take(3)
+            .joinToString(" ")
+            .replace(Regex("""/data/user/\d+/[\w.]+/\S*/"""), "")
+            .take(400)
     }
 
     private fun upload(uploadUrl: String, file: File) {
