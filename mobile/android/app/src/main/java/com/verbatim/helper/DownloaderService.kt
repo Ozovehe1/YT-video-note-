@@ -34,6 +34,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Foreground service — the phone's residential-IP downloader.
@@ -208,7 +210,7 @@ class DownloaderService : Service() {
         val workDir = File(cacheDir, "dl-$noteId")
         try {
             setStatus("Downloading “$title” 0%")
-            val audio = downloadAudio(videoUrl, workDir, title)
+            val audio = downloadAudio(videoUrl, workDir, title, noteId)
             // Supabase's free tier rejects uploads over 50 MB. Compressed 16 kHz mono audio only
             // crosses that around ~4.5 h of speech; if it still does, fail clearly instead of
             // uploading a doomed file and looping.
@@ -239,7 +241,26 @@ class DownloaderService : Service() {
         }
     }
 
-    private fun downloadAudio(videoUrl: String, dir: File, title: String): File {
+    /**
+     * Download the audio, aborting only if it STOPS MAKING PROGRESS.
+     *
+     * yt-dlp had no time limit of any kind, and it runs inside the poll loop — so a wedged download
+     * blocked the whole downloader silently and forever. The note stayed on "Transcribing", every
+     * other note stopped being claimed behind it, and the phone never told the server anything,
+     * because reporting only happens when the call returns.
+     *
+     * The limit is deliberately a STALL timeout rather than a deadline on the whole job. A hard
+     * deadline would kill slow-but-healthy downloads on a weak connection and then retry them from
+     * scratch, which burns the mobile data this design exists to save. Bytes still arriving means
+     * it's working, however slowly; silence means it's wedged — usually a 429 retry storm or a dead
+     * socket — and that is worth giving up on.
+     */
+    private suspend fun downloadAudio(
+        videoUrl: String,
+        dir: File,
+        title: String,
+        noteId: String,
+    ): File = coroutineScope {
         dir.apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
         request.addOption("-f", "bestaudio/best")
@@ -267,6 +288,9 @@ class DownloaderService : Service() {
         request.addOption("--user-agent", MOBILE_UA)
         request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
         // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
+        // Without a socket timeout a half-open connection hangs the whole transfer indefinitely —
+        // the retry settings below only engage once a request actually fails.
+        request.addOption("--socket-timeout", "30")
         request.addOption("--retries", "10")
         request.addOption("--extractor-retries", "10")
         request.addOption("--fragment-retries", "10")
@@ -298,12 +322,52 @@ class DownloaderService : Service() {
         // broadcast, and Android rate-limits notification posts — pushing 100 of them at whatever
         // speed yt-dlp reports burned battery to produce updates the system was throttling anyway.
         var lastShown = -1
-        YoutubeDL.getInstance().execute(request) { progress, _, _ ->
-            val pct = progress.toInt()
-            if (pct in 0..100 && (pct >= 100 || pct - lastShown >= PROGRESS_STEP_PERCENT)) {
-                lastShown = pct
-                setStatus(if (pct >= 100) "Converting “$title”…" else "Downloading “$title” $pct%")
+        val lastProgressAt = AtomicLong(System.currentTimeMillis())
+        // Once the transfer hits 100% the ffmpeg transcode runs and reports nothing at all, so the
+        // allowance widens — otherwise the watchdog would kill a perfectly healthy conversion of a
+        // multi-hour lecture on a slow phone.
+        val transcoding = AtomicBoolean(false)
+        val processId = "verbatim-$noteId"
+        // Written by the watchdog thread, read by the thread blocked in execute() — so it has to
+        // carry a memory barrier rather than be a plain captured local.
+        val stalled = AtomicBoolean(false)
+
+        val watchdog = launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(STALL_CHECK_MS)
+                val limit = if (transcoding.get()) TRANSCODE_STALL_MS else DOWNLOAD_STALL_MS
+                if (System.currentTimeMillis() - lastProgressAt.get() > limit) {
+                    stalled.set(true)
+                    Log.e(VerbatimApp.TAG, "download stalled for ${limit / 60_000}m — killing yt-dlp")
+                    runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }
+                    break
+                }
             }
+        }
+
+        try {
+            YoutubeDL.getInstance().execute(request, processId) { progress, _, _ ->
+                lastProgressAt.set(System.currentTimeMillis())
+                val pct = progress.toInt()
+                if (pct >= 100) transcoding.set(true)
+                if (pct in 0..100 && (pct >= 100 || pct - lastShown >= PROGRESS_STEP_PERCENT)) {
+                    lastShown = pct
+                    setStatus(if (pct >= 100) "Converting “$title”…" else "Downloading “$title” $pct%")
+                }
+            }
+        } catch (e: Exception) {
+            // A killed process surfaces as a generic yt-dlp failure, which would be reported as an
+            // inscrutable trace. Say what actually happened instead.
+            if (stalled.get()) {
+                throw IllegalStateException(
+                    "Download stalled — no data for " +
+                        "${(if (transcoding.get()) TRANSCODE_STALL_MS else DOWNLOAD_STALL_MS) / 60_000} minutes. " +
+                        "YouTube is likely rate-limiting this network; it will retry on its own.",
+                )
+            }
+            throw e
+        } finally {
+            watchdog.cancel()
         }
         // Pick the finished audio deliberately rather than taking whatever listFiles() happens to
         // return first. That directory can also hold `.part`/`.ytdl` scraps from an interrupted
@@ -419,6 +483,12 @@ class DownloaderService : Service() {
         private const val MAX_SOURCE_SIZE = "150M"
         /** Cap on the pre-flight yt-dlp update so a stalled fetch can't hold up polling. */
         private const val UPDATE_TIMEOUT_MS = 120_000L
+        /** How often the stall watchdog checks for progress. */
+        private const val STALL_CHECK_MS = 30_000L
+        /** No bytes for this long while transferring means yt-dlp is wedged, not merely slow. */
+        private const val DOWNLOAD_STALL_MS = 6 * 60_000L
+        /** ffmpeg reports no progress at all, so the transcode phase gets a much wider allowance. */
+        private const val TRANSCODE_STALL_MS = 30 * 60_000L
         private val JSON = "application/json".toMediaType()
     }
 }
