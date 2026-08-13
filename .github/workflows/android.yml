@@ -10,6 +10,14 @@ on:
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
+# Every commit is pushed to three branches, so three identical builds used to start at once and all
+# race to replace the same release asset. The publish step deletes the existing file before
+# uploading the new one, so two finishing seconds apart can leave the release with NO apk at all —
+# a dead download link. One run at a time, newest wins.
+concurrency:
+  group: android-apk-release
+  cancel-in-progress: true
+
 # Needed so the workflow can publish a Release with the APK attached.
 permissions:
   contents: write
