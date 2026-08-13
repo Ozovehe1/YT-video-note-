@@ -14,11 +14,8 @@ Built as a **native Android app** (Jetpack Compose) backed by **Supabase** (auth
 a **Modal** GPU transcription service, with a small **Next.js** app on **Vercel** serving the landing
 page + the API. The YouTube download runs on **your phone**.
 
-> **The note is never model-written.** It *is* the transcript, structured deterministically from
-> the ASR output — nothing is hallucinated, nothing is compressed, and note generation costs \$0.
-> The one optional exception is *section headings*: with a free `GROQ_API_KEY`, a small model reads
-> a short excerpt of each section and writes a title for it. It only ever produces labels — the
-> transcript underneath is untouched. Without the key, headings stay as time ranges.
+> **No LLM.** The note *is* the transcript, structured deterministically from the ASR output — so
+> there's nothing to hallucinate, nothing gets compressed, and note generation costs \$0.
 
 ---
 
