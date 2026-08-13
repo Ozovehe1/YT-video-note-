@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
-import { generateOutline } from "@/lib/headings";
+import {
+  parseSegments,
+  buildSections,
+  buildSectionsFromTopics,
+  verifyAsrSignature,
+} from "@/lib/asr-format";
+import { requestOutline } from "@/lib/outline";
 import { kickModalAsr, originFrom, getAudioPath, getAsrAttempts, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
@@ -92,25 +97,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No usable segments." }, { status: 422 });
   }
 
-  // Deterministically structure the FULL transcript into note sections — no LLM. Every word
-  // is preserved; speakers are labeled "Speaker 1/2/…".
-  const { sections, speakers, videoType } = buildSections(segments);
+  // Structure the FULL transcript into sections. Every word is preserved either way; speakers are
+  // labeled "Speaker 1/2/…".
+  //
+  // Preferred: ask the model where the SUBJECT changes, then cut the note ourselves at those
+  // points — snapped to speaker-turn boundaries, never inside a paragraph. The model supplies two
+  // hints per topic, a time and a title; buildSectionsFromTopics decides everything else. Sections
+  // then correspond to what is being discussed instead of to 300-second ticks of the clock.
+  //
+  // Fallback: fixed ~5-minute windows, exactly as before, whenever there is no key, the request
+  // fails, or the proposed boundaries don't survive validation.
+  const topics = await requestOutline(segments);
+  const outlined = topics ? buildSectionsFromTopics(segments, topics) : null;
+  const { sections, speakers, videoType } = outlined ?? buildSections(segments);
 
   // Idempotent (in case the callback is retried): clear any prior sections first.
   await admin.from("note_sections").delete().eq("note_id", noteId);
 
-  // Ask for an outline: where topics begin and what to call them. Purely a navigation aid — the
-  // model sees short excerpts and returns only titles, never touching the transcript, which stays
-  // assembled deterministically from the ASR output. Null on a missing key or ANY failure.
-  const outline = await generateOutline(sections);
-
   const rows = sections.map((s, i) => ({
     note_id: noteId,
     order_index: i,
-    // With an outline, an EMPTY heading is meaningful: it says this section continues the topic
-    // above it. `outline[i] || s.heading` would quietly replace those with time ranges and put a
-    // heading back on every section — exactly the scattered list the outline exists to replace.
-    heading: outline ? outline[i] : s.heading,
+    heading: s.heading,
     timestamp_label: s.timestamp_label,
     content: s.content,
   }));
