@@ -70,6 +70,8 @@ SPEAKER_SAMPLE_SECONDS = 30  # per local speaker, how much of their own audio to
 # _unify_speakers), so there is no distance threshold to hand-tune. MAX_SPEAKERS only bounds the
 # search so it stays cheap; it is not a tuning knob (a real note rarely has more distinct voices).
 MAX_SPEAKERS = 12
+# How much silhouette score we'll give up to keep the speaker count lower (see _unify_speakers).
+SILHOUETTE_TOLERANCE = 0.05
 
 # torch.compile is left OFF: it pays off only when a container is reused across many calls, but our
 # slices fan out to fresh one-shot workers, so per-worker compile warmup would OUTWEIGH the gain.
@@ -344,15 +346,27 @@ def _unify_speakers(results: list):
     if lo >= hi:
         ids = _fit(lo)  # count is pinned (e.g. only `lo` fingerprints, or MOSS already saw the max)
     else:
-        best_ids, best_score = None, -1.0
+        scored = []
         for k in range(lo, hi + 1):
             labels = _fit(k)
             if len(set(labels)) < 2 or k > n - 1:
                 continue  # silhouette needs 2..n-1 distinct clusters
-            score = silhouette_score(X, labels, metric="cosine")
-            if score > best_score:
-                best_score, best_ids = score, labels
-        ids = best_ids if best_ids is not None else _fit(lo)
+            scored.append((k, silhouette_score(X, labels, metric="cosine"), labels))
+
+        if scored:
+            # Prefer the FEWEST speakers that scores about as well as the best, rather than the raw
+            # argmax. One person's voice embeds differently from chunk to chunk — different noise
+            # floor, level, microphone distance — so splitting them in two often scores marginally
+            # higher than keeping them together, and a plain argmax takes that bait. The result is
+            # one speaker appearing under several identities, which reads to a user as labels
+            # swapping around. Ties broken toward fewer speakers are the safer error.
+            best_score = max(sc for _, sc, _ in scored)
+            k, _, ids = next(
+                (t for t in scored if t[1] >= best_score - SILHOUETTE_TOLERANCE),
+                scored[0],
+            )
+        else:
+            ids = _fit(lo)
 
     return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(n)}
 
@@ -384,6 +398,32 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         pipeline = modal.Cls.from_name("verbatim-asr", "Pipeline")()
         results = list(pipeline.transcribe_slice.starmap(args))
 
+        # Retry any slice that came back with NO segments but should contain audio.
+        #
+        # A slice returns nothing when MOSS truncates, fails to parse, or errors — and previously
+        # that was dropped in silence: the loop below skips empty results, `if not segments` only
+        # fires when EVERY slice is empty, and the note was marked ready with a hole in it. A real
+        # transcript lost five minutes mid-lecture this way, visible only as a gap in the reader's
+        # contents. For a note that promises to be verbatim, quietly shipping a gap is the worst
+        # possible failure, so the slice gets one more attempt.
+        #
+        # A slice that is genuinely silent legitimately returns nothing, and after the retry we
+        # accept that rather than failing the whole note over a quiet passage.
+        empty = [
+            i for i, r in enumerate(results)
+            if not (r.get("segments") or []) and i * CHUNK_SECONDS < duration - 1
+        ]
+        if empty:
+            print(f"[verbatim] {len(empty)} empty slice(s) {empty} — retrying")
+            retry_args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS, i) for i in empty]
+            for r in pipeline.transcribe_slice.starmap(retry_args):
+                if r.get("segments"):
+                    results[r["chunk"]] = r
+            still = [i for i in empty if not (results[i].get("segments") or [])]
+            if still:
+                # Not fatal — it may simply be silence — but it must not pass unrecorded.
+                print(f"[verbatim] slices still empty after retry: {still}")
+
         # Unify speaker labels across chunks by voice fingerprint. Best-effort: on any failure keep the
         # raw per-chunk labels (today's behavior) so the note still completes.
         labelmap = None
@@ -396,7 +436,17 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         for r in results:
             for s in r.get("segments") or []:
                 if labelmap is not None:
-                    s["speaker"] = labelmap.get((r["chunk"], str(s["speaker"])), s["speaker"])
+                    # No fallback to the RAW local label. Local labels live in the same SPEAKER_NN
+                    # namespace as the global ones, so chunk 14's local SPEAKER_00 would silently
+                    # become global SPEAKER_00 — a different person. That is how speakers ended up
+                    # swapping across chunks despite the clustering working correctly.
+                    #
+                    # Pairs go missing routinely: _embed_speakers skips any speaker with under 0.2 s
+                    # of audio in a slice, so anyone who only says "Yeah." there has no fingerprint.
+                    # Such a voice gets its own namespaced identity instead. Being an extra speaker
+                    # is a much smaller error than being attributed to the wrong one.
+                    key = (r["chunk"], str(s["speaker"]))
+                    s["speaker"] = labelmap.get(key, f"UNMATCHED_{r['chunk']:03d}_{s['speaker']}")
                 s.pop("chunk", None)  # internal namespacing key — not part of the callback contract
                 segments.append(s)
         if not segments:
