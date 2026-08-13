@@ -341,12 +341,25 @@ fun ReaderScreen(
 
 /**
  * One section heading row (its own LazyColumn item so paragraphs can be individually addressed).
- * A hairline rule carries the eye across the measure, so a new 5-minute block reads as a real
- * division of the text rather than one more line of grey.
+ *
+ * A section that opens a topic shows its title. One that merely continues a topic — or a note with
+ * no outline at all — shows a hairline rule with its timestamp, which divides the text without
+ * pretending a new subject started.
  */
 @Composable
 private fun SectionHeading(section: NoteSection) {
     val colors = VerbatimTheme.colors
+    val title = section.heading.trim().takeIf { it.isNotEmpty() && !it.isTimeRange() }
+    if (title != null) {
+        Column(Modifier.fillMaxWidth().padding(top = Space.xxxl, bottom = Space.md)) {
+            section.timestampLabel?.let {
+                Text(it, style = VerbatimText.meta, color = colors.oxblood)
+                Spacer(Modifier.height(Space.xs))
+            }
+            Text(title, style = VerbatimText.screenTitle, color = colors.ink)
+        }
+        return
+    }
     Row(
         Modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.md),
         verticalAlignment = Alignment.CenterVertically,
@@ -422,14 +435,22 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
     val rowToSection = ArrayList<Int>()
     rowToSection.add(-1) // 0: title header
     val headRow = IntArray(sections.size)
-    val anchors = ArrayList<Anchor>()
+    val titled = ArrayList<Anchor>()   // real topic headings, when the note has an outline
+    val perMinute = ArrayList<Anchor>() // fallback: one entry per minute of speech
     var idx = 1
     var lastMinute = -1
-    // The last timestamped paragraph in the whole note, so the index can be made to reach it.
     var lastBlock: Anchor? = null
+
     sections.forEachIndexed { si, section ->
         headRow[si] = idx
         rowToSection.add(si)
+        // A section whose heading is a real title starts a topic. Sections that merely continue one
+        // carry an empty heading, and older notes carry a "12:00 – 17:00" time range — neither is a
+        // topic, so neither belongs in the contents.
+        val heading = section.heading.trim()
+        if (heading.isNotEmpty() && !heading.isTimeRange()) {
+            titled.add(Anchor(section.timestampLabel ?: "", heading, idx))
+        }
         idx++
         section.content.forEach { block ->
             rowToSection.add(si)
@@ -437,7 +458,7 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
             if (secs != null) {
                 val minute = secs / 60
                 if (minute != lastMinute) {
-                    anchors.add(Anchor(block.timestamp ?: "", snippetOf(block.text), idx))
+                    perMinute.add(Anchor(block.timestamp ?: "", snippetOf(block.text), idx))
                     lastMinute = minute
                 }
                 lastBlock = Anchor(block.timestamp ?: "", snippetOf(block.text), idx)
@@ -447,13 +468,17 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
     }
     rowToSection.add(sections.lastIndex.coerceAtLeast(0)) // trailing spacer row
 
-    // Always finish on the note's real last line.
-    //
-    // Every entry above is the FIRST paragraph of its minute, which is right for an index but wrong
-    // at the end: a final minute holding nine paragraphs contributed only its opening one, so the
-    // contents stopped at 1:18:02 while the note actually ran to 1:18:49. That reads as the note
-    // ending early, and left no way to jump to the ending at all.
-    lastBlock?.let { end -> if (anchors.lastOrNull()?.rowIndex != end.rowIndex) anchors.add(end) }
+    // Prefer the note's own outline. It is a real table of contents — a handful of topics, each
+    // where the subject actually changes — instead of one row per minute showing whichever
+    // paragraph happened to land there, which for a 79-minute note was ~79 interchangeable
+    // mid-sentence fragments telling you nothing about where anything is.
+    val anchors = if (titled.isNotEmpty()) titled else perMinute
+
+    // Always finish on the note's real last line, but only for the per-minute fallback: an outline
+    // is a list of topics, and appending a stray final paragraph to it would not be one.
+    if (anchors === perMinute) {
+        lastBlock?.let { end -> if (anchors.lastOrNull()?.rowIndex != end.rowIndex) anchors.add(end) }
+    }
 
     if (anchors.isEmpty()) anchors.add(Anchor(sections.firstOrNull()?.timestampLabel ?: "0:00", "Top", 1))
     return ReaderLayout(
@@ -463,6 +488,10 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
         anchors = anchors,
     )
 }
+
+/** "12:00 – 17:00" and friends — the generated heading a section gets without an outline. */
+private fun String.isTimeRange(): Boolean =
+    Regex("""^\d{1,2}(:\d{2}){1,2}\s*[–\-]\s*\d{1,2}(:\d{2}){1,2}$""").matches(this)
 
 private fun snippetOf(text: String): String {
     val t = text.trim().replace("\n", " ")

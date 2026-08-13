@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseSegments, buildSections, verifyAsrSignature } from "@/lib/asr-format";
-import { generateHeadings } from "@/lib/headings";
+import { generateOutline } from "@/lib/headings";
 import { kickModalAsr, originFrom, getAudioPath, getAsrAttempts, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
@@ -99,16 +99,18 @@ export async function POST(request: Request) {
   // Idempotent (in case the callback is retried): clear any prior sections first.
   await admin.from("note_sections").delete().eq("note_id", noteId);
 
-  // Ask for a heading per section. Purely a navigation aid: the model sees a short excerpt and
-  // returns only labels, never touching the transcript, which stays assembled deterministically
-  // from the ASR output. Returns null on a missing key or ANY failure, in which case the sections
-  // keep their "12:00 – 17:00" time ranges and the note completes exactly as before.
-  const generated = await generateHeadings(sections);
+  // Ask for an outline: where topics begin and what to call them. Purely a navigation aid — the
+  // model sees short excerpts and returns only titles, never touching the transcript, which stays
+  // assembled deterministically from the ASR output. Null on a missing key or ANY failure.
+  const outline = await generateOutline(sections);
 
   const rows = sections.map((s, i) => ({
     note_id: noteId,
     order_index: i,
-    heading: generated?.[i] || s.heading,
+    // With an outline, an EMPTY heading is meaningful: it says this section continues the topic
+    // above it. `outline[i] || s.heading` would quietly replace those with time ranges and put a
+    // heading back on every section — exactly the scattered list the outline exists to replace.
+    heading: outline ? outline[i] : s.heading,
     timestamp_label: s.timestamp_label,
     content: s.content,
   }));
