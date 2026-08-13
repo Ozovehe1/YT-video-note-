@@ -263,7 +263,12 @@ class DownloaderService : Service() {
     ): File = coroutineScope {
         dir.apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
-        request.addOption("-f", "bestaudio/best")
+        // Audio-only, explicitly, before any fallback that could pull video. `bestaudio/best` lets
+        // yt-dlp drop to a COMBINED video+audio stream whenever the chosen player client exposes no
+        // audio-only format — and for a 98-minute lecture that stream is hundreds of MB, which both
+        // trips --max-filesize (a silent skip, exit 0, no file) and would burn the mobile data this
+        // design exists to save. Ordering m4a first also avoids a needless re-encode.
+        request.addOption("-f", "bestaudio[ext=m4a]/bestaudio/worstvideo+bestaudio/best")
         // Pick the SMALLEST audio stream YouTube offers (~48 kbps) instead of the default best
         // (~130 kbps). Speech ASR at 16 kHz mono needs nothing more, so this cuts the download by
         // ~2-3× (a 1.5 h podcast: ~32 MB vs ~88 MB) — the main mobile-data saver. `--max-filesize`
@@ -345,7 +350,7 @@ class DownloaderService : Service() {
             }
         }
 
-        try {
+        val response = try {
             YoutubeDL.getInstance().execute(request, processId) { progress, _, _ ->
                 lastProgressAt.set(System.currentTimeMillis())
                 val pct = progress.toInt()
@@ -378,10 +383,18 @@ class DownloaderService : Service() {
             ?.filterNot { it.name.endsWith(".part") || it.name.endsWith(".ytdl") || it.name.endsWith(".temp") }
             .orEmpty()
         if (candidates.isEmpty()) {
-            // yt-dlp exited without an error but left nothing — most often --max-filesize skipping
-            // an oversized stream. Say so, because "produced no audio file" reads like a crash.
+            // yt-dlp exited 0 but wrote nothing. Report what IT said rather than a theory about
+            // why: the previous message asserted the audio was over the size limit, which for a
+            // 98-minute lecture was nowhere near true and sent the diagnosis in the wrong
+            // direction entirely. yt-dlp always prints the reason (a skipped format, an
+            // unavailable stream, a filter that matched nothing) — with -v on, it's in this text.
+            val said = listOf(response.err, response.out)
+                .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+                .joinToString("\n")
+                .takeLast(600)
             throw IllegalStateException(
-                "yt-dlp downloaded nothing — the audio may be longer than the ${MAX_SOURCE_SIZE} limit or unavailable",
+                if (said.isEmpty()) "yt-dlp exited without downloading anything and printed no reason"
+                else "yt-dlp downloaded nothing. Its output:\n$said",
             )
         }
         // Prefer the transcoded m4a; otherwise the largest complete file present. This is the
