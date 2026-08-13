@@ -425,6 +425,8 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
     val anchors = ArrayList<Anchor>()
     var idx = 1
     var lastMinute = -1
+    // The last timestamped paragraph in the whole note, so the index can be made to reach it.
+    var lastBlock: Anchor? = null
     sections.forEachIndexed { si, section ->
         headRow[si] = idx
         rowToSection.add(si)
@@ -438,11 +440,21 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
                     anchors.add(Anchor(block.timestamp ?: "", snippetOf(block.text), idx))
                     lastMinute = minute
                 }
+                lastBlock = Anchor(block.timestamp ?: "", snippetOf(block.text), idx)
             }
             idx++
         }
     }
     rowToSection.add(sections.lastIndex.coerceAtLeast(0)) // trailing spacer row
+
+    // Always finish on the note's real last line.
+    //
+    // Every entry above is the FIRST paragraph of its minute, which is right for an index but wrong
+    // at the end: a final minute holding nine paragraphs contributed only its opening one, so the
+    // contents stopped at 1:18:02 while the note actually ran to 1:18:49. That reads as the note
+    // ending early, and left no way to jump to the ending at all.
+    lastBlock?.let { end -> if (anchors.lastOrNull()?.rowIndex != end.rowIndex) anchors.add(end) }
+
     if (anchors.isEmpty()) anchors.add(Anchor(sections.firstOrNull()?.timestampLabel ?: "0:00", "Top", 1))
     return ReaderLayout(
         totalItems = rowToSection.size,
