@@ -261,6 +261,28 @@ class DownloaderService : Service() {
         dir: File,
         title: String,
         noteId: String,
+    ): File {
+        var last: Exception? = null
+        for ((i, strategy) in DOWNLOAD_STRATEGIES.withIndex()) {
+            try {
+                return attemptDownload(videoUrl, dir, title, noteId, strategy)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+                Log.w(VerbatimApp.TAG, "strategy ${i + 1}/${DOWNLOAD_STRATEGIES.size} failed: ${e.message?.take(200)}")
+                if (i < DOWNLOAD_STRATEGIES.lastIndex) setStatus("Retrying “$title” another way…")
+            }
+        }
+        throw last ?: IllegalStateException("Download failed for an unknown reason")
+    }
+
+    private suspend fun attemptDownload(
+        videoUrl: String,
+        dir: File,
+        title: String,
+        noteId: String,
+        extractorArgs: String?,
     ): File = coroutineScope {
         dir.apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
@@ -287,28 +309,9 @@ class DownloaderService : Service() {
         // real client instead of signing in: hit the less-guarded mobile/TV APIs, send real-user HTTP,
         // retry with exponential backoff, and pace like a human. Deliberately no cookies/login.
         //
-        // player_client=ios,tv hits YouTube's mobile/TV endpoints, which are far less protected than the
-        // web/android ones; formats=missing_pot keeps formats usable when a PO token is absent instead of
-        // hard-failing.
-        // NO `tv` CLIENT. YouTube is running an experiment that marks every video DRM-protected on
-        // the tv client (yt-dlp issue #12563), and the failure is not confined to that client: once
-        // `tv` is in the list, extraction aborts with "This video is DRM protected" no matter which
-        // other clients could have served the audio. Verified directly against this account's stuck
-        // video — ios,tv,web_safari fails, and dropping tv succeeds on the same request:
-        //
-        //   ios,tv,web_safari      ERROR: This video is DRM protected
-        //   mweb,tv / tv,mweb      ERROR: This video is DRM protected
-        //   mweb,android_vr        OK  format 139, m4a, 49 kbps, 36 MB
-        //   mweb,ios,web_safari    OK  format 249, opus, 45 kbps, 33 MB
-        //
-        // android_vr is listed early because it serves native m4a, which makes the transcode below a
-        // cheap remux instead of an opus→AAC re-encode on a budget phone. mweb/ios/web_safari follow
-        // as fallbacks; all four are the less-guarded endpoints the anti-bot work targets, so
-        // dropping tv costs nothing there.
-        request.addOption(
-            "--extractor-args",
-            "youtube:player_client=android_vr,mweb,ios,web_safari;formats=missing_pot",
-        )
+        // Extractor arguments, if this strategy uses any. NEVER `formats=missing_pot` — see
+        // DOWNLOAD_STRATEGIES.
+        if (extractorArgs != null) request.addOption("--extractor-args", extractorArgs)
         request.addOption("--user-agent", MOBILE_UA)
         request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
         // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
@@ -482,7 +485,11 @@ class DownloaderService : Service() {
 
     private fun reportError(base: String, token: String, noteId: String, message: String) {
         try {
-            val payload = JSONObject().put("message", message.take(300)).toString()
+            // take(300) here is what mangled every report so far: the message had already been
+            // trimmed to its tail, and this then kept the FIRST 300 characters of that tail —
+            // dropping the end, which is exactly where the reason lives. summarizeFailure now hands
+            // over a short, reason-first line, so the cap only guards against a pathological case.
+            val payload = JSONObject().put("message", message.take(500)).toString()
             val req = Request.Builder()
                 .url("$base/api/agent/jobs/$noteId/error")
                 .header("Authorization", "Bearer $token")
@@ -542,6 +549,30 @@ class DownloaderService : Service() {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/126.0.0.0 Mobile Safari/537.36"
+        /**
+         * Extraction strategies, tried in order until one produces a file. `null` means "pass no
+         * --extractor-args at all", i.e. yt-dlp's own defaults.
+         *
+         * Defaults come FIRST because they are what actually worked: this account downloaded four
+         * notes successfully before any extractor arguments existed, and every failure began after
+         * they were introduced.
+         *
+         * No strategy may ever set `formats=missing_pot`. yt-dlp SKIPS formats missing a PO token by
+         * default, precisely because YouTube will refuse to serve them — that flag forces them back
+         * into consideration, so yt-dlp confidently selects a format it already knows is unusable
+         * and the download dies with HTTP 403 after extraction appears to succeed. That is the exact
+         * failure seen here, and it is self-inflicted.
+         *
+         * The second strategy keeps the anti-bot client set for the case the defaults are being
+         * rate-limited, minus the `tv` client (yt-dlp #12563 marks every video DRM-protected there
+         * and aborts the whole extraction) and minus missing_pot. Failures happen during extraction,
+         * before bytes move, so a second attempt costs seconds rather than mobile data.
+         */
+        private val DOWNLOAD_STRATEGIES: List<String?> = listOf(
+            null,
+            "youtube:player_client=default,android_vr,mweb,ios,web_safari",
+        )
+
         /** Runaway guard on the source stream, before transcoding. */
         private const val MAX_SOURCE_SIZE = "150M"
         /** Cap on the pre-flight yt-dlp update so a stalled fetch can't hold up polling. */

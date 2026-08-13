@@ -103,5 +103,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 function downloadFailureMessage(reported: string): string {
   const base = "We couldn't get this video's audio.";
   if (!reported) return `${base} Please try again in a bit.`;
-  return `${base} ${reported.slice(0, 200)}`;
+  // The phone already reduces the failure to a single reason line, so this only guards against a
+  // pathological payload. It used to cut at 200, which — stacked on the phone's own truncation —
+  // reliably destroyed the part of the message that named the cause.
+  return `${base} ${reported.slice(0, 400)}`;
 }
