@@ -23,6 +23,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -44,6 +45,10 @@ class DownloaderService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loop: Job? = null
+
+    /** " · yt-dlp <version>" appended to the idle status, so the running extractor build is
+     *  visible to a phone-only user who has no way to read logcat when a download fails. */
+    private var toolLabel: String = ""
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -90,39 +95,70 @@ class DownloaderService : Service() {
         }
         Prefs.setRunning(this@DownloaderService, true)
 
-        // Wait for youtubedl-android to finish unpacking, then pull the NIGHTLY yt-dlp so
-        // YouTube's frequent changes don't break downloads (biggest reliability lever). The library's
-        // BUNDLED yt-dlp is months old, so if this update silently fails the app runs a stale extractor
-        // that today's YouTube 429s on EVERY network — retry it, and surface the resulting version so the
-        // running yt-dlp date is visible in the app (a phone-only user can't read logcat).
+        // Wait for youtubedl-android to finish unpacking. This is a RETRY loop with a visible
+        // failure, not a bare wait on a flag: if the unpack fails the tools never become usable, and
+        // the old `while (!ready) delay(1000)` sat here silently forever while every note showed
+        // "Waiting for your phone".
         setStatus("Preparing…")
-        while (!VerbatimApp.ready) delay(1000)
+        var initAttempt = 0
+        while (isActive && !VerbatimApp.ensureReady(applicationContext)) {
+            initAttempt++
+            val reason = VerbatimApp.initError ?: "unknown error"
+            setStatus("Can't start the downloader: $reason")
+            Log.e(VerbatimApp.TAG, "init attempt $initAttempt failed: $reason")
+            // Back off but never give up — a failure caused by low storage clears itself once the
+            // user frees space, and then the downloader picks up on its own.
+            delay((30_000L * initAttempt).coerceAtMost(5 * 60_000L))
+        }
+        if (!isActive) return@coroutineScope
+
+        // Pull the NIGHTLY yt-dlp so YouTube's frequent changes don't break downloads (biggest
+        // reliability lever). The library's BUNDLED yt-dlp is months old, so if this update silently
+        // fails the app runs a stale extractor that today's YouTube 429s on EVERY network — retry it,
+        // and surface the resulting version so the running yt-dlp date is visible in the app (a
+        // phone-only user can't read logcat).
+        //
+        // Each attempt BLOCKS, so the retries run as their own job joined with a bound. Wrapping a
+        // blocking call in withTimeoutOrNull would do nothing — a timeout only takes effect at a
+        // suspension point — and three unbounded attempts back to back is three more ways to stall
+        // at "Preparing…". On overrun we poll on the current build and let the update land for the
+        // next download.
         setStatus("Updating yt-dlp…")
         var updated = false
-        for (attempt in 1..3) {
-            try {
-                YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
-                updated = true
-                break
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(VerbatimApp.TAG, "yt-dlp self-update attempt $attempt failed: ${e.message}")
-                delay(attempt * 2000L)
+        val updateJob = launch(Dispatchers.IO) {
+            for (attempt in 1..3) {
+                try {
+                    YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.NIGHTLY)
+                    updated = true
+                    break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(VerbatimApp.TAG, "yt-dlp self-update attempt $attempt failed: ${e.message}")
+                    delay(attempt * 2000L)
+                }
             }
         }
+        val finished = withTimeoutOrNull(UPDATE_TIMEOUT_MS) { updateJob.join() } != null
         val ytdlpVersion = runCatching { YoutubeDL.getInstance().version(applicationContext) }.getOrNull()
-        Log.e(VerbatimApp.TAG, "yt-dlp version=$ytdlpVersion (update ${if (updated) "ok" else "FAILED"})")
-        setStatus("Ready · yt-dlp ${ytdlpVersion ?: "unknown"}${if (updated) "" else " (update failed)"}")
+        Log.i(VerbatimApp.TAG, "yt-dlp version=$ytdlpVersion (update ${if (updated) "ok" else "not confirmed"})")
+        // Held in a field and appended to the idle status. Setting it as its own status here would
+        // be pointless — the very next line overwrites it with "Polling…" — so the version a user
+        // needs in order to report a download failure would never actually be on screen.
+        toolLabel = " · yt-dlp ${ytdlpVersion ?: "unknown"}" + when {
+            updated -> ""
+            !finished -> " (updating…)"
+            else -> " (update failed)"
+        }
 
-        setStatus("Polling…")
+        setStatus("Polling…$toolLabel")
         // isActive comes from the coroutine's own context, so cancelling the scope ends the loop
         // immediately. The previous check read a field that the coroutine sets on itself, which is
         // still null on the first pass and left a window where a cancelled loop kept polling.
         while (isActive) {
             try {
                 val jobs = fetchJobs(base, token)
-                if (jobs.isEmpty()) setStatus("Polling…") else for (job in jobs) processJob(base, token, job)
+                if (jobs.isEmpty()) setStatus("Polling…$toolLabel") else for (job in jobs) processJob(base, token, job)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -214,7 +250,7 @@ class DownloaderService : Service() {
         // Prefer HLS (m3u8) audio: HLS streams currently need NO PO token, so they download without login
         // even when YouTube gates the progressive streams (the ios/tv clients below serve HLS).
         request.addOption("--format-sort", "proto:m3u8,+abr,+size")
-        request.addOption("--max-filesize", "150M")
+        request.addOption("--max-filesize", MAX_SOURCE_SIZE)
         request.addOption("--no-playlist")
         request.addOption("-v") // verbose: full extractor trace so the real failure/version is visible
 
@@ -269,8 +305,24 @@ class DownloaderService : Service() {
                 setStatus(if (pct >= 100) "Converting “$title”…" else "Downloading “$title” $pct%")
             }
         }
-        return dir.listFiles()?.firstOrNull { it.name.startsWith("audio.") }
-            ?: throw IllegalStateException("yt-dlp produced no audio file")
+        // Pick the finished audio deliberately rather than taking whatever listFiles() happens to
+        // return first. That directory can also hold `.part`/`.ytdl` scraps from an interrupted
+        // transfer and, if the transcode didn't run, the original download — and uploading a
+        // half-written `.part` would send a truncated file on to transcription as if it were whole.
+        val candidates = dir.listFiles()
+            ?.filter { it.isFile && it.length() > 0 }
+            ?.filterNot { it.name.endsWith(".part") || it.name.endsWith(".ytdl") || it.name.endsWith(".temp") }
+            .orEmpty()
+        if (candidates.isEmpty()) {
+            // yt-dlp exited without an error but left nothing — most often --max-filesize skipping
+            // an oversized stream. Say so, because "produced no audio file" reads like a crash.
+            throw IllegalStateException(
+                "yt-dlp downloaded nothing — the audio may be longer than the ${MAX_SOURCE_SIZE} limit or unavailable",
+            )
+        }
+        // Prefer the transcoded m4a; otherwise the largest complete file present.
+        return candidates.firstOrNull { it.extension.equals("m4a", ignoreCase = true) }
+            ?: candidates.maxByOrNull { it.length() }!!
     }
 
     private fun upload(uploadUrl: String, file: File) {
@@ -363,6 +415,10 @@ class DownloaderService : Service() {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/126.0.0.0 Mobile Safari/537.36"
+        /** Runaway guard on the source stream, before transcoding. */
+        private const val MAX_SOURCE_SIZE = "150M"
+        /** Cap on the pre-flight yt-dlp update so a stalled fetch can't hold up polling. */
+        private const val UPDATE_TIMEOUT_MS = 120_000L
         private val JSON = "application/json".toMediaType()
     }
 }

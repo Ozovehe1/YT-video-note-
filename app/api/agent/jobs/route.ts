@@ -115,7 +115,11 @@ async function reclaimStale(admin: ReturnType<typeof createAdminClient>, userId:
     .select("id, audio_path")
     .eq("user_id", userId)
     .eq("status", "transcribing")
-    .lt("claimed_at", cutoff);
+    // A NULL claimed_at counts as stale. Every note stranded by the original bug has one — the
+    // column did not exist when they were claimed — and `claimed_at < cutoff` is NULL, not true,
+    // so a plain comparison would leave exactly the notes this is meant to rescue sitting there
+    // forever. Notes genuinely mid-transcription are excluded below by having their audio_path set.
+    .or(`claimed_at.is.null,claimed_at.lt."${cutoff}"`);
   // A missing claimed_at column (migration 0005 not run) errors here; reclaim just stays off.
   if (error || !data?.length) return;
 
