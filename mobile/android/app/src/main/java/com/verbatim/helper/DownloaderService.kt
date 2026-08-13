@@ -289,7 +289,25 @@ class DownloaderService : Service() {
         // player_client=ios,tv hits YouTube's mobile/TV endpoints, which are far less protected than the
         // web/android ones; formats=missing_pot keeps formats usable when a PO token is absent instead of
         // hard-failing.
-        request.addOption("--extractor-args", "youtube:player_client=ios,tv,web_safari;formats=missing_pot")
+        // NO `tv` CLIENT. YouTube is running an experiment that marks every video DRM-protected on
+        // the tv client (yt-dlp issue #12563), and the failure is not confined to that client: once
+        // `tv` is in the list, extraction aborts with "This video is DRM protected" no matter which
+        // other clients could have served the audio. Verified directly against this account's stuck
+        // video — ios,tv,web_safari fails, and dropping tv succeeds on the same request:
+        //
+        //   ios,tv,web_safari      ERROR: This video is DRM protected
+        //   mweb,tv / tv,mweb      ERROR: This video is DRM protected
+        //   mweb,android_vr        OK  format 139, m4a, 49 kbps, 36 MB
+        //   mweb,ios,web_safari    OK  format 249, opus, 45 kbps, 33 MB
+        //
+        // android_vr is listed early because it serves native m4a, which makes the transcode below a
+        // cheap remux instead of an opus→AAC re-encode on a budget phone. mweb/ios/web_safari follow
+        // as fallbacks; all four are the less-guarded endpoints the anti-bot work targets, so
+        // dropping tv costs nothing there.
+        request.addOption(
+            "--extractor-args",
+            "youtube:player_client=android_vr,mweb,ios,web_safari;formats=missing_pot",
+        )
         request.addOption("--user-agent", MOBILE_UA)
         request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
         // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
