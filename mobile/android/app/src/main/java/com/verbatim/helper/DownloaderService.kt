@@ -384,8 +384,9 @@ class DownloaderService : Service() {
                 "yt-dlp downloaded nothing — the audio may be longer than the ${MAX_SOURCE_SIZE} limit or unavailable",
             )
         }
-        // Prefer the transcoded m4a; otherwise the largest complete file present.
-        return candidates.firstOrNull { it.extension.equals("m4a", ignoreCase = true) }
+        // Prefer the transcoded m4a; otherwise the largest complete file present. This is the
+        // coroutineScope block's value, not a `return` — a bare return isn't legal inside a lambda.
+        candidates.firstOrNull { it.extension.equals("m4a", ignoreCase = true) }
             ?: candidates.maxByOrNull { it.length() }!!
     }
 
