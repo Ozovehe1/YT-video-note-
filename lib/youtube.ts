@@ -107,7 +107,18 @@ export async function fetchTrending(
     throw new Error(`YouTube trending failed (${res.status}): ${body.slice(0, 200)}`);
   }
   const data = (await res.json()) as { items?: VideoItem[]; nextPageToken?: string };
-  return { results: toFeedResults(data.items ?? []), nextPageToken: data.nextPageToken ?? null };
+  const results = toFeedResults(data.items ?? []);
+
+  // Shuffle the fallback too, or a user with no library — or one whose seed lookup failed — gets a
+  // feed that never moves, which is the complaint this was all meant to fix. The chart is a single
+  // fixed list per region, so unlike the personalised path there is no larger pool to sample from:
+  // order is the only variety available here without spending extra quota, and it is a real one.
+  //
+  // Not when paging: a caller walking pageTokens needs a stable order, or the pages overlap.
+  return {
+    results: pageToken ? results : shuffled(results),
+    nextPageToken: data.nextPageToken ?? null,
+  };
 }
 
 /**
