@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { formatDuration } from "@/lib/utils";
-import type { NoteBlock, VideoType } from "@/lib/types";
+import type { NoteBlock } from "@/lib/types";
 
 /** Verify the Modal webhook's HMAC-SHA256 signature over the raw request body. */
 export function verifyAsrSignature(rawBody: string, signature: string | null, secret: string): boolean {
@@ -57,39 +57,30 @@ export interface BuiltSection {
   content: NoteBlock[];
 }
 
-/** ~5-minute windows keep sections skimmable without any LLM deciding topics. */
+/** ~5-minute windows keep sections skimmable without any LLM deciding where the subject changes. */
 const SECTION_SECONDS = 300;
 
 /**
- * Structure diarized segments into note sections DETERMINISTICALLY — no LLM. The full
- * transcript is preserved verbatim: one paragraph per segment (keeping MOSS's own
- * per-paragraph timing and speaker turns), grouped into ~5-minute sections. Speaker labels
- * are normalized to "Speaker 1", "Speaker 2", … in first-appearance order (MOSS's raw
- * S01/S02 never leak out).
+ * The fallback: fixed ~5-minute windows, no model involved.
+ *
+ * Used whenever there is no GROQ_API_KEY, the request fails, or the proposed subheadings don't
+ * survive validation — so a note always completes even with nothing but the ASR output. Sections are
+ * headed by their time range because there is nothing better to call them; when the model does
+ * answer, buildSubheadedSections() in lib/segment.ts cuts on the subject instead.
+ *
+ * Speakers arrive already resolved to their display labels (lib/speakers.ts), so this only groups.
  */
-export function buildSections(segments: AsrSegment[]): {
-  sections: BuiltSection[];
-  speakers: string[];
-  videoType: VideoType;
-} {
+export function buildTimeWindowSections(segments: AsrSegment[]): BuiltSection[] {
   const ts = (n: number) => formatDuration(n) ?? "0:00"; // inputs are always real seconds
-  const labels = distinctSpeakers(segments);
-  const nameOf = new Map<string, string>();
-  labels.forEach((l, i) => nameOf.set(l, `Speaker ${i + 1}`));
-  const speakers = labels.map((l) => nameOf.get(l)!);
 
-  // One paragraph per MOSS segment — its own timestamp + speaker (follows MOSS's structure;
-  // no merging, so per-paragraph timing is preserved). Group into ~5-minute sections.
+  // One paragraph per MOSS segment — no merging, so its speaker turns are preserved exactly.
   const sections: BuiltSection[] = [];
   let curStart = -1;
   let cur: NoteBlock[] = [];
   const flush = (end: number) => {
     if (!cur.length) return;
-    sections.push({
-      heading: `${ts(curStart)} – ${ts(end)}`,
-      timestamp_label: ts(curStart),
-      content: cur,
-    });
+    const range = `${ts(curStart)} – ${ts(end)}`;
+    sections.push({ heading: range, timestamp_label: range, content: cur });
     cur = [];
   };
   for (const s of segments) {
@@ -98,14 +89,9 @@ export function buildSections(segments: AsrSegment[]): {
       flush(s.start);
       curStart = s.start;
     }
-    cur.push({
-      type: "paragraph",
-      speaker: nameOf.get(s.speaker) ?? s.speaker,
-      timestamp: ts(s.start),
-      text: s.text,
-    });
+    cur.push({ type: "paragraph", speaker: s.speaker, text: s.text });
   }
   flush(segments.length ? segments[segments.length - 1].start : 0);
 
-  return { sections, speakers, videoType: labels.length >= 2 ? "dialogue" : "monologue" };
+  return sections;
 }

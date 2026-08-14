@@ -291,23 +291,30 @@ fun ReaderScreen(
                                     scope.launch { listState.animateScrollToItem(anchor.rowIndex) }
                                 }
                                 .padding(horizontal = Space.gutter, vertical = Space.md),
-                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                anchor.label,
-                                style = VerbatimText.meta,
-                                color = if (active) colors.oxblood else colors.muted,
-                                modifier = Modifier.width(64.dp),
-                            )
-                            Text(
-                                anchor.snippet,
-                                fontFamily = ReadFamily,
-                                fontSize = 15.sp,
-                                lineHeight = 20.sp,
-                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                                color = colors.ink,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
+                            // Stacked, not side by side. A subheading is a phrase and a range is
+                            // two clock times; sharing one line meant the range was squeezed into a
+                            // fixed 64.dp column and the title clipped at a single line. Each now
+                            // gets the full measure, so neither is ever cut off.
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(
+                                    anchor.title,
+                                    fontFamily = ReadFamily,
+                                    fontSize = 15.sp,
+                                    lineHeight = 20.sp,
+                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = colors.ink,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                )
+                                if (anchor.range.isNotEmpty() && anchor.range != anchor.title) {
+                                    Spacer(Modifier.height(Space.xs))
+                                    Text(
+                                        anchor.range,
+                                        style = VerbatimText.meta,
+                                        color = if (active) colors.oxblood else colors.muted,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -341,18 +348,33 @@ fun ReaderScreen(
 
 /**
  * One section heading row (its own LazyColumn item so paragraphs can be individually addressed).
- * A hairline rule carries the eye across the measure, so a new 5-minute block reads as a real
- * division of the text rather than one more line of grey.
+ *
+ * A titled section leads with its time range and then the subheading itself. An untitled one — the
+ * fallback, where the heading IS the range — gets a hairline rule instead, so a new block still
+ * reads as a real division of the text rather than one more line of grey.
  */
 @Composable
 private fun SectionHeading(section: NoteSection) {
     val colors = VerbatimTheme.colors
+    val range = section.timestampLabel?.trim().orEmpty()
+    val title = section.heading.trim().takeIf { it.isNotEmpty() && it != range }
+    if (title != null) {
+        Column(Modifier.fillMaxWidth().padding(top = Space.xxxl, bottom = Space.md)) {
+            if (range.isNotEmpty()) {
+                // Never clipped: the whole span belongs to the heading, not just where it starts.
+                Text(range, style = VerbatimText.meta, color = colors.oxblood)
+                Spacer(Modifier.height(Space.xs))
+            }
+            Text(title, style = VerbatimText.screenTitle, color = colors.ink)
+        }
+        return
+    }
     Row(
         Modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        section.timestampLabel?.let {
-            Text(it, style = VerbatimText.meta, color = colors.oxblood)
+        if (range.isNotEmpty()) {
+            Text(range, style = VerbatimText.meta, color = colors.oxblood)
             Spacer(Modifier.width(Space.md))
         }
         Box(Modifier.weight(1f).height(1.dp).background(colors.hairline))
@@ -403,7 +425,7 @@ private fun BlockView(block: NoteBlock, font: ReaderFont, fontSize: Int, showSpe
 
 // ---- Flattened-reader layout: per-row index map + finer, timestamped Contents anchors ----
 
-private data class Anchor(val label: String, val snippet: String, val rowIndex: Int)
+private data class Anchor(val range: String, val title: String, val rowIndex: Int)
 
 private class ReaderLayout(
     val totalItems: Int,
@@ -413,10 +435,16 @@ private class ReaderLayout(
 )
 
 /**
- * Flatten sections into per-row indices so the Contents can jump to an exact paragraph. Row 0 is the title
- * header; each section contributes one heading row then one row per paragraph; a trailing spacer closes the
- * list (this MUST mirror the LazyColumn's item order exactly). Contents anchors are emitted ~once per minute
- * from the paragraphs' own timestamps, each pointing at that paragraph's absolute row.
+ * Flatten sections into per-row indices so the Contents can jump to a section. Row 0 is the title
+ * header; each section contributes one heading row then one row per paragraph; a trailing spacer
+ * closes the list (this MUST mirror the LazyColumn's item order exactly).
+ *
+ * Contents is one entry per SECTION — its subheading and the span of the recording it covers. It
+ * used to be one entry per minute of speech, taken from the paragraphs' own timestamps, which made
+ * it an index of the clock rather than of the note: dozens of near-identical rows, and its last
+ * entry landed on the first line of the final minute instead of the note's actual ending. Since the
+ * sections now each end where the next begins, and the last ends on the final paragraph, the list
+ * covers the note exactly.
  */
 private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
     val rowToSection = ArrayList<Int>()
@@ -424,65 +452,27 @@ private fun buildReaderLayout(sections: List<NoteSection>): ReaderLayout {
     val headRow = IntArray(sections.size)
     val anchors = ArrayList<Anchor>()
     var idx = 1
-    var lastMinute = -1
-    // The last timestamped paragraph in the whole note, so the index can be made to reach it.
-    var lastBlock: Anchor? = null
     sections.forEachIndexed { si, section ->
         headRow[si] = idx
         rowToSection.add(si)
+        val range = section.timestampLabel?.trim().orEmpty()
+        val heading = section.heading.trim()
+        anchors.add(Anchor(range, if (heading.isNotEmpty()) heading else range, idx))
         idx++
-        section.content.forEach { block ->
+        section.content.forEach { _ ->
             rowToSection.add(si)
-            val secs = parseTimestamp(block.timestamp)
-            if (secs != null) {
-                val minute = secs / 60
-                if (minute != lastMinute) {
-                    anchors.add(Anchor(block.timestamp ?: "", snippetOf(block.text), idx))
-                    lastMinute = minute
-                }
-                lastBlock = Anchor(block.timestamp ?: "", snippetOf(block.text), idx)
-            }
             idx++
         }
     }
     rowToSection.add(sections.lastIndex.coerceAtLeast(0)) // trailing spacer row
 
-    // Always finish on the note's real last line.
-    //
-    // Every entry above is the FIRST paragraph of its minute, which is right for an index but wrong
-    // at the end: a final minute holding nine paragraphs contributed only its opening one, so the
-    // contents stopped at 1:18:02 while the note actually ran to 1:18:49. That reads as the note
-    // ending early, and left no way to jump to the ending at all.
-    lastBlock?.let { end -> if (anchors.lastOrNull()?.rowIndex != end.rowIndex) anchors.add(end) }
-
-    if (anchors.isEmpty()) anchors.add(Anchor(sections.firstOrNull()?.timestampLabel ?: "0:00", "Top", 1))
+    if (anchors.isEmpty()) anchors.add(Anchor("", "Top", 1))
     return ReaderLayout(
         totalItems = rowToSection.size,
         sectionHeadRow = headRow,
         rowToSection = rowToSection.toIntArray(),
         anchors = anchors,
     )
-}
-
-private fun snippetOf(text: String): String {
-    val t = text.trim().replace("\n", " ")
-    return if (t.length > 48) t.take(48).trimEnd() + "…" else t
-}
-
-/** Parse "h:mm:ss" / "m:ss" / "s" into seconds; null if unparseable. */
-private fun parseTimestamp(ts: String?): Int? {
-    if (ts.isNullOrBlank()) return null
-    val parts = ts.split(":")
-    return try {
-        when (parts.size) {
-            3 -> parts[0].trim().toInt() * 3600 + parts[1].trim().toInt() * 60 + parts[2].trim().toInt()
-            2 -> parts[0].trim().toInt() * 60 + parts[1].trim().toInt()
-            1 -> parts[0].trim().toInt()
-            else -> null
-        }
-    } catch (e: NumberFormatException) {
-        null
-    }
 }
 
 @Composable

@@ -73,6 +73,21 @@ MAX_SPEAKERS = 12
 # How much silhouette score we'll give up to keep the speaker count lower (see _unify_speakers).
 SILHOUETTE_TOLERANCE = 0.05
 
+# Seconds of audio adjacent slices SHARE. This is the one number here that is a straight
+# cost/coverage choice rather than something derived, so: 30 s costs ~10% more GPU on a 300 s slice
+# and buys a stretch of speech that BOTH slices transcribe.
+#
+# That shared stretch is what makes cross-chunk speaker identity provable instead of guessed. With
+# disjoint slices, slice 3 ends where slice 4 begins and they have no audio in common, so the only
+# thing tying slice 4's "S01" to slice 3's "S02" is how similar two voice fingerprints happen to
+# look. Overlap them and whoever is talking inside the shared window is, demonstrably, one person
+# appearing under a local label in each slice — a MUST-LINK (see _overlap_links), which then goes
+# into the clustering as a hard constraint rather than a similarity score.
+OVERLAP_SECONDS = 30
+# Distance standing in for "these two may never be merged". Finite so scikit-learn stays numerically
+# well-behaved; large enough that complete linkage orders such a merge dead last.
+FORBIDDEN_DISTANCE = 1e6
+
 # torch.compile is left OFF: it pays off only when a container is reused across many calls, but our
 # slices fan out to fresh one-shot workers, so per-worker compile warmup would OUTWEIGH the gain.
 # Flip to True if we ever move to a warm container pool.
@@ -297,13 +312,94 @@ class Pipeline:
         return {"chunk": chunk_i, "segments": out, "embeddings": embeddings}
 
 
-def _unify_speakers(results: list):
+def _speaking_intervals(segments: list, lo: float, hi: float):
+    """{local_label: [(start, end), ...]} for speech inside [lo, hi), on the absolute timeline.
+
+    Segments with no end timestamp are skipped rather than given an invented duration — a missing
+    end simply means this speaker contributes no evidence here, and the clustering falls back to
+    voice similarity for them.
+    """
+    out: dict[str, list] = {}
+    for s in segments:
+        end = s.get("end")
+        if end is None:
+            continue
+        a, b = max(lo, float(s.get("start") or 0.0)), min(hi, float(end))
+        if b > a:
+            out.setdefault(str(s["speaker"]), []).append((a, b))
+    return out
+
+
+def _intersection(a: list, b: list) -> float:
+    """Total seconds two lists of intervals have in common."""
+    total = 0.0
+    for a0, a1 in a:
+        for b0, b1 in b:
+            total += max(0.0, min(a1, b1) - max(a0, b0))
+    return total
+
+
+def _overlap_links(results: list, offsets: list):
+    """
+    MUST-LINK pairs from the shared audio between adjacent slices.
+
+    Slices overlap by OVERLAP_SECONDS, so the speech in that window is transcribed twice — once by
+    each worker, under each worker's own local labels. Whoever holds the floor there is one person,
+    so lining the two views up identifies which local labels refer to them.
+
+    Pairs are matched by how much speaking time they share, and only MUTUAL best matches are kept:
+    slice i's label must be slice i+1's best candidate and vice versa. That's a threshold-free rule —
+    no minimum overlap to tune — and it means brief crosstalk can't manufacture a link.
+
+    Returns [((chunk_i, local), (chunk_j, local)), ...]. This is the "permutation found on the
+    overlapping parts of two adjacent segments" that overlap-aware diarization systems rely on.
+    """
+    links = []
+    by_chunk = {r["chunk"]: (r.get("segments") or []) for r in results}
+    for i in range(len(offsets) - 1):
+        lo, hi = offsets[i + 1], offsets[i] + CHUNK_SECONDS
+        if hi <= lo:
+            continue  # no shared window (shouldn't happen while OVERLAP_SECONDS > 0)
+        left = _speaking_intervals(by_chunk.get(i, []), lo, hi)
+        right = _speaking_intervals(by_chunk.get(i + 1, []), lo, hi)
+        if not left or not right:
+            continue
+
+        shared = {(a, b): _intersection(left[a], right[b]) for a in left for b in right}
+        for a in left:
+            best_b = max(right, key=lambda b: shared[(a, b)])
+            if shared[(a, best_b)] <= 0:
+                continue
+            best_a = max(left, key=lambda x: shared[(x, best_b)])
+            if best_a == a:  # mutual best — each is the other's strongest match
+                links.append(((i, str(a)), (i + 1, str(best_b))))
+    return links
+
+
+def _unify_speakers(results: list, must_link: list | None = None):
     """
     Cross-chunk speaker unification (the second stage). `results` is the per-slice
     {chunk, segments, embeddings} list. Cluster every (chunk, local-speaker) voice fingerprint into
     global identities so the same voice is one label everywhere. Returns a map
     {(chunk_i, local_label): "SPEAKER_NN"}, or None to leave labels untouched (monologue, or not
     enough fingerprints to unify — in which case raw labels already behave correctly).
+
+    Two hard constraints shape the clustering, which is what stops labels swapping between chunks:
+
+    CANNOT-LINK — two local speakers from the SAME slice are, by the diarizer's own reckoning,
+    different people. Merging them into one global identity is the exact failure that reads as
+    "Speaker 1 became Speaker 2 halfway through", and unconstrained clustering does it freely. This
+    is the constraint EEND-VC-style systems apply: embeddings from the same chunk may not share a
+    cluster.
+
+    MUST-LINK — pairs identified from the overlap between adjacent slices (see _overlap_links).
+    Proven by shared audio rather than inferred from similarity.
+
+    They are expressed as distances (forbidden = FORBIDDEN_DISTANCE, required = 0) and fed to
+    agglomerative clustering with COMPLETE linkage, which takes the maximum distance between two
+    clusters. A merge that would unite two same-slice speakers therefore costs FORBIDDEN_DISTANCE
+    and is ordered last, and the constraint propagates transitively for free: once a cluster holds
+    slice 7's A, its distance to any cluster holding slice 7's B is already the forbidden value.
     """
     import numpy as np
     from sklearn.cluster import AgglomerativeClustering
@@ -331,42 +427,81 @@ def _unify_speakers(results: list):
     norms[norms == 0] = 1.0
     X = X / norms
 
+    # Plain cosine distances. Kept UNCONSTRAINED for scoring: the constrained matrix below carries
+    # FORBIDDEN_DISTANCE entries that would swamp any silhouette computed over it.
+    raw = np.clip(1.0 - (X @ X.T), 0.0, 2.0)
+    np.fill_diagonal(raw, 0.0)
+
+    # The same distances, with the constraints written in.
+    D = raw.copy()
+    index = {k: i for i, k in enumerate(keys)}
+    for a in range(n):
+        for b in range(a + 1, n):
+            if keys[a][0] == keys[b][0]:  # same slice → different people, by the diarizer's account
+                D[a][b] = D[b][a] = FORBIDDEN_DISTANCE
+    for left, right in must_link or []:
+        a, b = index.get(left), index.get(right)
+        # A must-link can never contradict a cannot-link — overlap pairs are always cross-slice — but
+        # check anyway rather than let a required merge quietly overwrite a forbidden one.
+        if a is not None and b is not None and keys[a][0] != keys[b][0]:
+            D[a][b] = D[b][a] = 0.0
+
     def _fit(k):
         try:
-            return AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average").fit_predict(X)
+            return AgglomerativeClustering(
+                n_clusters=k, metric="precomputed", linkage="complete"
+            ).fit_predict(D)
         except TypeError:  # older scikit-learn used `affinity=` instead of `metric=`
-            return AgglomerativeClustering(n_clusters=k, affinity="cosine", linkage="average").fit_predict(X)
+            return AgglomerativeClustering(
+                n_clusters=k, affinity="precomputed", linkage="complete"
+            ).fit_predict(D)
+
+    def _violates(labels) -> bool:
+        # The constraint is enforced by the distance matrix, but at a small enough k it becomes
+        # unsatisfiable and the clustering has to break it. Such a result is worse than useless.
+        seen = {}
+        for i, lab in enumerate(labels):
+            chunk = keys[i][0]
+            if seen.setdefault((chunk, int(lab)), i) != i:
+                return True
+        return False
 
     # Choose the speaker count AUTOMATICALLY instead of via a hand-tuned distance threshold. Search
-    # candidate counts from MOSS's lower bound up to MAX_SPEAKERS and keep the one whose clusters are
-    # cleanest (highest silhouette — tightest within-speaker, widest between-speaker). This self-
-    # calibrates to each recording: 2 for an interview, 4 for a panel, etc., with nothing to tune.
+    # candidate counts from the diarizer's lower bound up to MAX_SPEAKERS and keep the one whose
+    # clusters are cleanest (highest silhouette — tightest within-speaker, widest between-speaker).
+    # This self-calibrates to each recording: 2 for an interview, 4 for a panel, nothing to tune.
     lo = max(2, max_local)
     hi = min(MAX_SPEAKERS, n)
-    if lo >= hi:
-        ids = _fit(lo)  # count is pinned (e.g. only `lo` fingerprints, or MOSS already saw the max)
+    scored = []
+    for k in range(lo, hi + 1):
+        labels = _fit(k)
+        if _violates(labels):
+            continue  # this k cannot satisfy the cannot-link constraint
+        if len(set(labels)) < 2 or k > n - 1:
+            continue  # silhouette needs 2..n-1 distinct clusters
+        scored.append((k, silhouette_score(raw, labels, metric="precomputed"), labels))
+
+    if scored:
+        # Prefer the FEWEST speakers that scores about as well as the best, rather than the raw
+        # argmax. One person's voice embeds differently from chunk to chunk — different noise floor,
+        # level, microphone distance — so splitting them in two often scores marginally higher than
+        # keeping them together, and a plain argmax takes that bait. The result is one speaker
+        # appearing under several identities, which reads to a user as labels swapping around. Ties
+        # broken toward fewer speakers are the safer error.
+        best_score = max(sc for _, sc, _ in scored)
+        _, _, ids = next((t for t in scored if t[1] >= best_score - SILHOUETTE_TOLERANCE), scored[0])
     else:
-        scored = []
+        # Nothing scoreable (very few fingerprints, or every k broke the constraint). Fall back to
+        # the smallest count that at least honours the constraint; if none does, leave the labels
+        # alone rather than ship a merge we know to be wrong.
         for k in range(lo, hi + 1):
             labels = _fit(k)
-            if len(set(labels)) < 2 or k > n - 1:
-                continue  # silhouette needs 2..n-1 distinct clusters
-            scored.append((k, silhouette_score(X, labels, metric="cosine"), labels))
-
-        if scored:
-            # Prefer the FEWEST speakers that scores about as well as the best, rather than the raw
-            # argmax. One person's voice embeds differently from chunk to chunk — different noise
-            # floor, level, microphone distance — so splitting them in two often scores marginally
-            # higher than keeping them together, and a plain argmax takes that bait. The result is
-            # one speaker appearing under several identities, which reads to a user as labels
-            # swapping around. Ties broken toward fewer speakers are the safer error.
-            best_score = max(sc for _, sc, _ in scored)
-            k, _, ids = next(
-                (t for t in scored if t[1] >= best_score - SILHOUETTE_TOLERANCE),
-                scored[0],
-            )
+            if not _violates(labels):
+                ids = labels
+                break
         else:
-            ids = _fit(lo)
+            print("[verbatim] no speaker count satisfies the cannot-link constraint — keeping raw labels")
+            return None
 
     return {keys[i]: f"SPEAKER_{int(ids[i]):02d}" for i in range(n)}
 
@@ -388,8 +523,13 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         if duration <= 0:
             raise RuntimeError("could not determine audio duration")
 
-        n = max(1, math.ceil(duration / CHUNK_SECONDS))
-        args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS, i) for i in range(n)]
+        # Slices ADVANCE by less than their own length, so each one shares OVERLAP_SECONDS of audio
+        # with the next. See OVERLAP_SECONDS: that shared stretch is what lets us prove which local
+        # speakers are the same person, instead of inferring it from voice similarity alone.
+        stride = max(1, CHUNK_SECONDS - OVERLAP_SECONDS)
+        n = 1 if duration <= CHUNK_SECONDS else math.ceil((duration - CHUNK_SECONDS) / stride) + 1
+        offsets = [i * stride for i in range(n)]
+        args = [(audio_url, offsets[i], CHUNK_SECONDS, i) for i in range(n)]
 
         # Look the class up by name at call-time (same reason as the endpoint below): a serialized
         # Notebook deploy can't pickle an unhydrated Cls global. .starmap fans the slices out across
@@ -411,11 +551,11 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         # accept that rather than failing the whole note over a quiet passage.
         empty = [
             i for i, r in enumerate(results)
-            if not (r.get("segments") or []) and i * CHUNK_SECONDS < duration - 1
+            if not (r.get("segments") or []) and offsets[i] < duration - 1
         ]
         if empty:
             print(f"[verbatim] {len(empty)} empty slice(s) {empty} — retrying")
-            retry_args = [(audio_url, i * CHUNK_SECONDS, CHUNK_SECONDS, i) for i in empty]
+            retry_args = [(audio_url, offsets[i], CHUNK_SECONDS, i) for i in empty]
             for r in pipeline.transcribe_slice.starmap(retry_args):
                 if r.get("segments"):
                     results[r["chunk"]] = r
@@ -424,17 +564,32 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
                 # Not fatal — it may simply be silence — but it must not pass unrecorded.
                 print(f"[verbatim] slices still empty after retry: {still}")
 
-        # Unify speaker labels across chunks by voice fingerprint. Best-effort: on any failure keep the
-        # raw per-chunk labels (today's behavior) so the note still completes.
+        # Unify speaker labels across chunks: hard links from the overlapping audio first, then voice
+        # fingerprints for whatever the overlaps couldn't reach. Best-effort — on any failure keep the
+        # raw per-chunk labels (previous behaviour) so the note still completes.
         labelmap = None
         try:
-            labelmap = _unify_speakers(results)
-        except Exception:
+            links = _overlap_links(results, offsets)
+            print(f"[verbatim] {len(links)} must-link pair(s) from slice overlaps")
+            labelmap = _unify_speakers(results, links)
+        except Exception as e:
+            print(f"[verbatim] speaker unification failed ({e}) — keeping raw labels")
             labelmap = None
 
         segments = []
+        # Which global labels the diarizer heard inside a single slice, i.e. pairs it says are
+        # definitely different people. The API uses this to refuse any speaker merge a model later
+        # proposes that would contradict the audio.
+        per_chunk_labels: dict[int, set] = {}
         for r in results:
+            chunk = r["chunk"]
+            # Drop the duplicated head of every slice but the first. That speech is inside the
+            # overlap window and the previous slice already transcribed it; keeping both would print
+            # the same sentences twice. Its purpose was the must-link above, and that's already done.
+            floor = offsets[chunk] + OVERLAP_SECONDS if chunk > 0 else float("-inf")
             for s in r.get("segments") or []:
+                if (s.get("start") or 0.0) < floor:
+                    continue
                 if labelmap is not None:
                     # No fallback to the RAW local label. Local labels live in the same SPEAKER_NN
                     # namespace as the global ones, so chunk 14's local SPEAKER_00 would silently
@@ -445,15 +600,31 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
                     # of audio in a slice, so anyone who only says "Yeah." there has no fingerprint.
                     # Such a voice gets its own namespaced identity instead. Being an extra speaker
                     # is a much smaller error than being attributed to the wrong one.
-                    key = (r["chunk"], str(s["speaker"]))
-                    s["speaker"] = labelmap.get(key, f"UNMATCHED_{r['chunk']:03d}_{s['speaker']}")
+                    key = (chunk, str(s["speaker"]))
+                    s["speaker"] = labelmap.get(key, f"UNMATCHED_{chunk:03d}_{s['speaker']}")
+                per_chunk_labels.setdefault(chunk, set()).add(str(s["speaker"]))
                 s.pop("chunk", None)  # internal namespacing key — not part of the callback contract
                 segments.append(s)
         if not segments:
             raise RuntimeError("No speech found in the audio")
         segments.sort(key=lambda s: s.get("start") or 0.0)
 
-        _hmac_post(callback_url, {"note_id": note_id, "status": "done", "segments": segments})
+        cannot_link = sorted(
+            {
+                (a, b)
+                for labels in per_chunk_labels.values()
+                for a in labels
+                for b in labels
+                if a < b
+            }
+        )
+
+        _hmac_post(callback_url, {
+            "note_id": note_id,
+            "status": "done",
+            "segments": segments,
+            "cannot_link": [list(pair) for pair in cannot_link],
+        })
     except Exception as e:
         try:
             _hmac_post(callback_url, {"note_id": note_id, "status": "error", "error": str(e)[:300]})

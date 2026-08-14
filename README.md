@@ -6,16 +6,29 @@ PDF, DOCX, Markdown, or EPUB.
 
 Search a video by **title** (no need to find the link yourself) or paste a URL. Verbatim listens to
 the actual audio, separates **who is speaking** (real diarization, not guessed), and lays the whole
-thing out **in order, verbatim** — nothing summarized away. A dialogue reads as *Speaker 1 / Speaker
-2* turns with per-paragraph timestamps; a monologue reads as one voice. Longer video → longer read,
-up to multi-hour talks.
+thing out **in order, verbatim** — nothing summarized away. A dialogue reads as named turns, a
+monologue as one voice, under subheadings that follow the subject rather than the clock. Longer
+video → longer read, up to multi-hour talks.
 
 Built as a **native Android app** (Jetpack Compose) backed by **Supabase** (auth / data / storage) and
 a **Modal** GPU transcription service, with a small **Next.js** app on **Vercel** serving the landing
 page + the API. The YouTube download runs on **your phone**.
 
-> **No LLM.** The note *is* the transcript, structured deterministically from the ASR output — so
-> there's nothing to hallucinate, nothing gets compressed, and note generation costs \$0.
+> **The note is never model-written.** It *is* the transcript, structured deterministically from the
+> ASR output — nothing is hallucinated, nothing is compressed, and note generation costs \$0.
+>
+> With a free `GROQ_API_KEY` a small model annotates it, and may only ever answer with *labels*: it
+> marks where the subject changes and titles each stretch, and it says who the speakers are. It never
+> emits a word of the note, never decides where text goes, and never produces an end time — our own
+> code does all the structuring. Every answer is then checked before use: a **name is accepted only
+> if it actually appears** in the video title, the channel, or the transcript, and a proposed speaker
+> merge is refused if the diarizer heard those two voices inside one chunk. Without the key, notes
+> fall back to ~5-minute windows and *Speaker 1 / Speaker 2*, and still complete.
+>
+> That split is deliberate rather than merely cautious. Asking an un-finetuned model to rewrite a
+> diarized transcript is *measured* to make it worse — [DiarizationLM](https://arxiv.org/abs/2401.03506)
+> found zero-shot prompting "can still introduce even more errors" and "delete big chunks of
+> hypothesis text". For a note that promises to be verbatim, that is disqualifying.
 
 ---
 
@@ -37,15 +50,16 @@ Same app, background downloader service
 
 Modal  (GPU service, agent/modal_asr.py)
   3. The API hands Modal a short-lived signed URL to that audio. Modal fetches
-     it, transcribes + diarizes with MOSS-Transcribe-Diarize (long audio is
-     split into ~5-min chunks transcribed in parallel, then a voice-fingerprint
-     pass unifies each speaker's label across chunks, so any length works —
-     fast), and POSTs the speaker-labeled segments back, HMAC-signed          (app/api/notes/asr-callback)
+     it, transcribes + diarizes with MOSS-Transcribe-Diarize (long audio is cut
+     into ~5-min slices transcribed in parallel; adjacent slices OVERLAP by 30s,
+     and constrained clustering turns that shared audio into proof of who is
+     who across the whole recording), and POSTs the speaker-labeled segments
+     back, HMAC-signed                                                        (app/api/notes/asr-callback)
 
 API
-  4. Turns the segments into sections deterministically — one paragraph per
-     ASR segment, its own timestamp, "Speaker N" labels — and marks the note
-     ready. The app reads it from Supabase and renders the reader.            (lib/asr-format.ts)
+  4. Asks a small model where the subject changes and who is speaking — labels
+     only — then cuts the note at those points ITSELF, always on a speaker-turn
+     boundary, and marks it ready. The app renders the reader.                (lib/segment.ts, lib/speakers.ts)
 ```
 
 **Why this design**
@@ -53,10 +67,21 @@ API
   gate), and auto-updates absorb YouTube changes. Modal never touches YouTube.
 - **Real speaker attribution** — captions have no speaker labels and many videos have none at all.
   Transcribing the audio with a diarizing model gives true turns, not inferred ones.
-- **Any length, fast** — longer audio is split into ~5-min chunks that transcribe **in parallel** on
+- **Any length, fast** — longer audio is split into ~5-min slices that transcribe **in parallel** on
   separate GPU workers and stitch back on an absolute timeline, so even a multi-hour video finishes in
-  about the time of its single slowest chunk. A voice-fingerprint pass (ECAPA-TDNN speaker embeddings,
-  clustered across the whole recording) then keeps each speaker's label consistent across every chunk.
+  about the time of its single slowest slice.
+- **Speaker labels that hold across the whole recording** — slices are diarized independently, so
+  slice 4's "S01" need not be slice 3's "S01". Two constraints fix that, both from the
+  [EEND-VC](https://www.emergentmind.com/topics/end-to-end-neural-diarization-with-vector-clustering-eend-vc)
+  line of work. Adjacent slices **overlap by 30 s**, and
+  whoever holds the floor in that shared stretch is provably one person under two local labels — a
+  **must-link**, evidence rather than a similarity score. And two voices the diarizer separated
+  *within* one slice are, by its own account, different people, so they get a **cannot-link** and can
+  never be merged. Both are handed to constrained agglomerative clustering over ECAPA-TDNN
+  fingerprints, which is what stops a voice becoming Speaker 1 in one stretch and Speaker 2 in the next.
+- **Sections that follow the subject** — a boundary is snapped to the nearest **speaker turn**
+  ([TextTiling](https://aclanthology.org/J97-1003.pdf)'s rule: a detected boundary is assigned to the
+  closest natural break), so a speaker is never left half under one heading and half under the next.
 - **Timeout-proof + cheap** — Vercel never handles YouTube or big audio; the GPU work is off on Modal;
   structuring the note is pure code.
 
@@ -75,8 +100,8 @@ API
 ## Features
 
 - **Search-first entry** — find videos by title via the YouTube Data API, or paste any link.
-- **Faithful, speaker-attributed notes** — the full transcript, in order, split into *Speaker 1 /
-  Speaker 2* paragraphs (dialogue) or a single voice (monologue), each paragraph timestamped.
+- **Faithful, speaker-attributed notes** — the full transcript, in order, split into speaker turns
+  (dialogue) or a single voice (monologue), grouped under subheadings that each carry their time range.
 - **Premium native reader** — continuous scroll, four themes (Paper / Sepia / Night / High-contrast),
   serif/sans toggle, size control, a table of contents, resume-where-you-left-off, and a progress bar.
 - **Offline-first** — the library and your notes are cached on-device (Room), so they open instantly
@@ -152,6 +177,10 @@ YOUTUBE_API_KEY=AIza...
 # Modal transcription
 MODAL_TRANSCRIBE_URL=https://YOUR--verbatim-asr-transcribe.modal.run
 ASR_WEBHOOK_SECRET=change-me-to-a-long-random-string # SAME value as the Modal `tailscale` secret
+
+# Subheadings + speaker names (OPTIONAL — free tier at https://console.groq.com/keys).
+# Without it, notes fall back to ~5-minute sections and "Speaker 1 / Speaker 2".
+GROQ_API_KEY=gsk_...
 ```
 
 ### 5. Point the app at your project
@@ -199,7 +228,11 @@ app/
     agent/jobs/[id]/error/       phone reports a failure → bounded retry
     diag/                        env-presence diagnostics
 lib/
-  youtube, asr-format, asr-kickoff, agent-auth, types, utils
+  youtube, asr-kickoff, agent-auth, types, utils
+  segment        cut the note at subject changes, snapped to speaker turns
+  speakers       resolve who is talking: verified name → role → Speaker N
+  annotate       the one model call — subheadings + speakers, labels only
+  asr-format     parsing + the no-model fallback (fixed ~5-minute windows)
   export/{markdown,docx,epub,pdf}
   supabase/{client,server,middleware,admin,auth}   auth: accepts cookie OR Bearer (native app)
 agent/                           Modal ASR service (modal_asr.py)
@@ -210,8 +243,11 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio
 
 ## Notes & limits
 
-- **Speaker labels are neutral** (*Speaker 1*, *Speaker 2*) — they come straight from the diarizer, so
-  they're accurate turns without guessing real names.
+- **Speaker names are evidence-backed, never guessed.** A name is used only when that exact string
+  appears in the video title, the channel, or the transcript — the check is in our code, after the
+  model answers, so a hallucinated name is structurally impossible rather than merely discouraged.
+  Failing that you get a role read from the conversation (*Host*, *Guest*, *Interviewer*), and
+  failing that the neutral *Speaker 1* / *Speaker 2* straight from the diarizer.
 - **The phone must be reachable** for a note to advance. If the app isn't running, notes wait in
   **"Waiting for your phone"** until it is — nothing is lost. The downloader restarts itself after a
   reboot or an app update, and a note whose download was cut short (app killed mid-job) is returned
