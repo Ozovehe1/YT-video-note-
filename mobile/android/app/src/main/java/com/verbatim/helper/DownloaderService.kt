@@ -567,7 +567,6 @@ class DownloaderService : Service() {
         private const val POLL_SECONDS = 20L
         /** Publish download progress at most every N percent (see downloadAudio). */
         private const val PROGRESS_STEP_PERCENT = 5
-        /** A current mobile-Chrome User-Agent so yt-dlp's requests look like a real phone browser. */
         /**
          * Extraction strategies, tried in order until one produces a file. `null` means "pass no
          * --extractor-args at all", i.e. yt-dlp's own defaults.
