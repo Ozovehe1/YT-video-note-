@@ -76,12 +76,13 @@ export function buildTimeWindowSections(segments: AsrSegment[]): BuiltSection[] 
   // One paragraph per MOSS segment — no merging, so its speaker turns are preserved exactly.
   const sections: BuiltSection[] = [];
   let curStart = -1;
-  let cur: NoteBlock[] = [];
+  let window: AsrSegment[] = [];
   const flush = (end: number) => {
-    if (!cur.length) return;
+    if (!window.length) return;
     const range = `${ts(curStart)} – ${ts(end)}`;
-    sections.push({ heading: range, timestamp_label: range, content: cur });
-    cur = [];
+    // Same paragraph joining as the subheaded path, so the fallback reads the same way.
+    sections.push({ heading: range, timestamp_label: range, content: toParagraphs(window) });
+    window = [];
   };
   for (const s of segments) {
     if (curStart < 0) curStart = s.start;
@@ -89,9 +90,54 @@ export function buildTimeWindowSections(segments: AsrSegment[]): BuiltSection[] 
       flush(s.start);
       curStart = s.start;
     }
-    cur.push({ type: "paragraph", speaker: s.speaker, text: s.text });
+    window.push(s);
   }
   flush(segments.length ? segments[segments.length - 1].start : 0);
 
   return sections;
+}
+
+/**
+ * Join ASR segments into readable paragraphs.
+ *
+ * MOSS emits a segment per CLAUSE, not per sentence, and rendering one paragraph each broke prose
+ * into a column of fragments — "I'm chatting with Ryan Greenblatt," / "who is the chief scientist at
+ * Redwood Research," / "where he focuses on technical AI safety." Three paragraphs, one sentence.
+ *
+ * So consecutive segments from the same speaker are joined until the text actually reaches a
+ * sentence ending. The rule is the punctuation the ASR itself produced — no length threshold, no
+ * guess about how long a paragraph ought to be.
+ *
+ * Every word survives in its original order: this only changes where paragraphs break, never the
+ * text.
+ *
+ * The abbreviation list is the one genuinely arbitrary thing here, and it is unavoidable: a period
+ * after "U.S" or "Dr" is not a sentence ending, and no rule distinguishes it from one without
+ * knowing the word. Every sentence tokenizer carries such a list. Kept short and obvious rather than
+ * exhaustive — a miss costs one paragraph break in the wrong place, never a word.
+ */
+const SENTENCE_END = /[.!?…]["'”’)\]]*$/;
+const ABBREVIATIONS =
+  /(?:^|\s)(?:(?:[A-Za-z]\.)+|(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|approx|Inc|Ltd|Co|Fig|No|Vol)\.)$/i;
+
+export function toParagraphs(segments: AsrSegment[]): NoteBlock[] {
+  const out: NoteBlock[] = [];
+  let speaker: string | undefined;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    if (!buffer.length) return;
+    out.push({ type: "paragraph", speaker, text: buffer.join(" ") });
+    buffer = [];
+  };
+
+  for (const seg of segments) {
+    if (speaker !== undefined && seg.speaker !== speaker) flush();
+    speaker = seg.speaker;
+    buffer.push(seg.text);
+    const joined = buffer[buffer.length - 1];
+    if (SENTENCE_END.test(joined) && !ABBREVIATIONS.test(joined)) flush();
+  }
+  flush();
+  return out;
 }

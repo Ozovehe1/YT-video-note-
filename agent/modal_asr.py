@@ -267,6 +267,69 @@ def _unify_speakers(results: list, must_link: list | None=None):
             return None
     return {keys[i]: f'SPEAKER_{int(ids[i]):02d}' for i in range(n)}
 
+def _adopt_unmatched(labelmap: dict, links: list, results: list):
+    """
+    Give a voice with no fingerprint the label its neighbour proved it shares.
+
+    _embed_speakers skips any local speaker with under 0.2 s of audio in a slice, so someone who
+    only says "Yeah." there has no fingerprint and cannot be clustered. Those used to be handed a
+    unique identity each — UNMATCHED_027_S01 — on the reasoning that an extra speaker is a smaller
+    error than a wrong one. That holds for one slice and fails badly at scale: simulated over a
+    3-hour recording with 15% of speakers too quiet to print, it produced SEVENTEEN speakers in a
+    two-person note, concentrated wherever the quiet moments fell. It reads as labels drifting
+    late in long videos.
+
+    But the overlap links do not need embeddings at all — they come from the segment TIMES, from
+    speech both slices transcribed. So a voice too quiet to fingerprint in one slice is very often
+    still provably the same person as a labelled voice in the next. Propagating labels along those
+    edges resolves it on evidence rather than by invention.
+
+    Whatever remains after that shares ONE label instead of one each: still an error, but a single
+    extra speaker rather than one per quiet moment.
+    """
+    known = dict(labelmap)
+    adjacency: dict = {}
+    for a, b in links:
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
+
+    everyone = [
+        (r["chunk"], str(s["speaker"]))
+        for r in results
+        for s in (r.get("segments") or [])
+    ]
+    missing = {k for k in everyone if k not in known}
+    if not missing:
+        return known, 0
+
+    # Walk the overlap chain outward from each unlabelled voice until it reaches a labelled one.
+    adopted = 0
+    for start in list(missing):
+        seen = {start}
+        queue = [start]
+        while queue:
+            node = queue.pop(0)
+            for peer in adjacency.get(node, []):
+                if peer in seen:
+                    continue
+                if peer in known:
+                    known[start] = known[peer]
+                    adopted += 1
+                    queue = []
+                    break
+                seen.add(peer)
+                queue.append(peer)
+
+    still = [k for k in missing if k not in known]
+    for k in still:
+        known[k] = "SPEAKER_UNKNOWN"
+    if still:
+        print(f"[verbatim] {len(still)} voice(s) too quiet to identify — sharing one label")
+    if adopted:
+        print(f"[verbatim] {adopted} unfingerprinted voice(s) adopted a label from slice overlap")
+    return known, len(still)
+
+
 @app.function(image=cpu_image, secrets=[modal.Secret.from_name('tailscale')], timeout=14400)
 def orchestrate(audio_url: str, note_id: str, callback_url: str):
     try:
@@ -294,6 +357,7 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
             if still:
                 print(f'[verbatim] slices still empty after retry: {still}')
         labelmap = None
+        links = []
         try:
             links = _overlap_links(results, offsets)
             print(f'[verbatim] {len(links)} must-link pair(s) from slice overlaps')
@@ -301,6 +365,9 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
         except Exception as e:
             print(f'[verbatim] speaker unification failed ({e}) — keeping raw labels')
             labelmap = None
+        if labelmap is not None:
+            labelmap, _ = _adopt_unmatched(labelmap, links, results)
+
         segments = []
         per_chunk_labels: dict[int, set] = {}
         for r in results:
@@ -311,7 +378,11 @@ def orchestrate(audio_url: str, note_id: str, callback_url: str):
                     continue
                 if labelmap is not None:
                     key = (chunk, str(s['speaker']))
-                    s['speaker'] = labelmap.get(key, f"UNMATCHED_{chunk:03d}_{s['speaker']}")
+                    # _adopt_unmatched has already given every key a label, by overlap evidence
+                    # where it exists and one shared fallback where it does not. A unique identity
+                    # per unfingerprinted voice is exactly what produced 17 speakers in a
+                    # two-person note.
+                    s['speaker'] = labelmap.get(key, 'SPEAKER_UNKNOWN')
                 per_chunk_labels.setdefault(chunk, set()).add(str(s['speaker']))
                 s.pop('chunk', None)
                 segments.append(s)

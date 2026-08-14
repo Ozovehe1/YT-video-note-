@@ -1,5 +1,5 @@
 import { formatDuration } from "@/lib/utils";
-import type { AsrSegment, BuiltSection } from "@/lib/asr-format";
+import { toParagraphs, type AsrSegment, type BuiltSection } from "@/lib/asr-format";
 
 /**
  * Cut the note into sections at the points where the subject changes.
@@ -127,11 +127,7 @@ export function buildSubheadedSections(
     return {
       heading: cut.title,
       timestamp_label: `${clock(segments[cut.index].start)} – ${clock(endSeconds)}`,
-      content: segments.slice(cut.index, end).map((seg) => ({
-        type: "paragraph" as const,
-        speaker: seg.speaker,
-        text: seg.text,
-      })),
+      content: toParagraphs(segments.slice(cut.index, end)),
     };
   });
 
