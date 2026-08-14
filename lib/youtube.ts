@@ -28,6 +28,28 @@ const UPLOADS_PER_CHANNEL = 6;
 const UPLOADS_SCANNED_PER_CHANNEL = 30;
 
 /**
+ * How far into a channel's back catalogue the scan may start.
+ *
+ * The scan used to always take the NEWEST 30 uploads, which is what made the feed a fixed pool:
+ * until a channel published something, its candidates were the same 30 videos forever, and
+ * shuffling only reordered them. Starting at a random page instead turns the pool into the
+ * channel's whole history — a channel with 300 uploads has ten windows, not one.
+ *
+ * `playlistItems` has no offset parameter, so reaching page N genuinely costs N calls. Capped at 4
+ * to keep that bounded: worst case MAX_SEED_CHANNELS * 4 units, still an order of magnitude under
+ * a single `search.list`.
+ */
+const MAX_CATALOGUE_DEPTH = 4;
+
+/**
+ * How many category charts to blend, rather than only the single most-read one.
+ *
+ * A library usually spans a few interests, and taking only categories[0] meant the chart half of
+ * the feed was drawn from one topic every time — another fixed pool. Each extra chart is 1 unit.
+ */
+const CATEGORIES_BLENDED = 3;
+
+/**
  * How many chart entries to pull when the chart is feeding a long-form filter.
  *
  * Trending skews short — music videos, trailers, clips — so most of a page will not survive
@@ -264,6 +286,52 @@ function byFrequency(values: string[]): string[] {
  * An empty library returns an empty feed, not the trending chart: with nothing read there is
  * nothing to recommend, and the search box is the honest thing to show.
  */
+/**
+ * Read one window of a channel's uploads, starting at a randomly chosen depth.
+ *
+ * This is what stops the feed being a constant. Always reading the newest page meant a channel's
+ * candidate set never changed between refreshes; walking to a random page means the same channel
+ * offers a different slice of its history each time, so the feed moves even when nobody has
+ * uploaded anything.
+ *
+ * Walking is sequential because `playlistItems` has no offset — each page costs 1 unit — so the
+ * depth is capped and the walk stops early at the end of a short catalogue rather than paying for
+ * pages that do not exist. Cached briefly and PER WINDOW, so a refresh that picks a different depth
+ * genuinely refetches instead of being served the previous window's bytes.
+ */
+async function scanCatalogue(playlistId: string, seen: Set<string>): Promise<string[]> {
+  const depth = Math.floor(Math.random() * MAX_CATALOGUE_DEPTH);
+  let token: string | undefined;
+
+  for (let page = 0; ; page++) {
+    const url = new URL(`${API}/playlistItems`);
+    const params: Record<string, string> = {
+      key: key(),
+      part: "contentDetails",
+      playlistId,
+      maxResults: String(UPLOADS_SCANNED_PER_CHANNEL),
+    };
+    if (token) params.pageToken = token;
+    url.search = new URLSearchParams(params).toString();
+
+    const r = await fetch(url, { next: { revalidate: 600 } });
+    if (!r.ok) return [];
+    const d = (await r.json()) as {
+      items?: { contentDetails?: { videoId?: string } }[];
+      nextPageToken?: string;
+    };
+
+    // Either we've arrived at the chosen window, or the catalogue ran out first — in which case
+    // this page is the deepest there is and is the honest answer rather than an empty one.
+    if (page >= depth || !d.nextPageToken) {
+      return (d.items ?? [])
+        .map((i) => i.contentDetails?.videoId)
+        .filter((v): v is string => !!v && !seen.has(v));
+    }
+    token = d.nextPageToken;
+  }
+}
+
 export async function fetchRecommendations(
   libraryVideoIds: string[],
   regionCode = "US",
@@ -280,7 +348,7 @@ export async function fetchRecommendations(
     part: "snippet",
     id: libraryVideoIds.slice(0, 50).join(","),
   }).toString();
-  const seedRes = await fetch(seedUrl, { next: { revalidate: 900 } });
+  const seedRes = await fetch(seedUrl, { next: { revalidate: 1800 } });
   if (!seedRes.ok) return unpaged(fetchTrending(regionCode, CHART_FETCH_SIZE));
   const seed = (await seedRes.json()) as {
     items?: { snippet?: { channelId?: string; categoryId?: string } }[];
@@ -304,7 +372,7 @@ export async function fetchRecommendations(
     part: "contentDetails",
     id: topChannels.join(","), // batched — still 1 unit however many channels
   }).toString();
-  const chRes = await fetch(chUrl, { next: { revalidate: 3600 } });
+  const chRes = await fetch(chUrl, { next: { revalidate: 3600 } }); // uploads-playlist ids never change
   if (chRes.ok) {
     const ch = (await chRes.json()) as {
       items?: { contentDetails?: { relatedPlaylists?: { uploads?: string } } }[];
@@ -314,21 +382,7 @@ export async function fetchRecommendations(
       .filter((p): p is string => !!p);
 
     const pages = await Promise.all(
-      uploads.map(async (playlistId) => {
-        const plUrl = new URL(`${API}/playlistItems`);
-        plUrl.search = new URLSearchParams({
-          key: key(),
-          part: "contentDetails",
-          playlistId,
-          maxResults: String(UPLOADS_SCANNED_PER_CHANNEL),
-        }).toString();
-        const r = await fetch(plUrl, { next: { revalidate: 3600 } });
-        if (!r.ok) return [];
-        const d = (await r.json()) as { items?: { contentDetails?: { videoId?: string } }[] };
-        return (d.items ?? [])
-          .map((i) => i.contentDetails?.videoId)
-          .filter((v): v is string => !!v && !seen.has(v));
-      }),
+      uploads.map(async (playlistId) => scanCatalogue(playlistId, seen)),
     );
     // Hydrate every channel's candidates in ONE call rather than one per channel.
     const hydrated = await hydrateVideos(pages.flat());
@@ -345,24 +399,28 @@ export async function fetchRecommendations(
     }
   }
 
-  // --- signal 2: what's trending in the category they read most ---
-  if (categories.length) {
-    const catUrl = new URL(`${API}/videos`);
-    catUrl.search = new URLSearchParams({
-      key: key(),
-      part: "snippet,contentDetails",
-      chart: "mostPopular",
-      regionCode,
-      videoCategoryId: categories[0],
-      maxResults: String(CHART_FETCH_SIZE),
-    }).toString();
-    const catRes = await fetch(catUrl, { next: { revalidate: 900 } });
-    if (catRes.ok) {
+  // --- signal 2: what's trending across the categories they read ---
+  // Blending several beats locking onto categories[0]: a library that spans tech, history and
+  // comedy was previously served one of those forever, which is another way the feed sat still.
+  const blend = shuffled(categories.slice(0, CATEGORIES_BLENDED));
+  const charts = await Promise.all(
+    blend.map(async (categoryId) => {
+      const catUrl = new URL(`${API}/videos`);
+      catUrl.search = new URLSearchParams({
+        key: key(),
+        part: "snippet,contentDetails",
+        chart: "mostPopular",
+        regionCode,
+        videoCategoryId: categoryId,
+        maxResults: String(CHART_FETCH_SIZE),
+      }).toString();
+      const catRes = await fetch(catUrl, { next: { revalidate: 600 } });
+      if (!catRes.ok) return [];
       const d = (await catRes.json()) as { items?: VideoItem[] };
-      // Shuffled for the same reason: the chart barely moves within its 15-minute cache window.
-      fromCategory.push(...shuffled(toFeedResults(d.items ?? [])));
-    }
-  }
+      return toFeedResults(d.items ?? []);
+    }),
+  );
+  fromCategory.push(...shuffled(charts.flat()));
 
   // Interleave one video per channel per round, so the feed opens with breadth instead of ten
   // videos from whichever channel happened to rank first.
