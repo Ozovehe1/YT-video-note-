@@ -22,11 +22,40 @@ import type { MergeHint, SpeakerHint } from "@/lib/speakers";
  * null, and the note completes on fixed time windows with anonymous speakers, exactly as before.
  */
 
-// Overridable without a code change: Groq's free-tier line-up moves, and a model id that has been
-// retired makes every request 404 — which used to surface only as "the note has no subheadings".
-// Set GROQ_MODEL in the environment to switch. Check https://console.groq.com/docs/models for what
-// your account can actually call.
+// Chosen by testing against the live API with this exact prompt, not from a model card.
+//
+// qwen/qwen3.6-27b is a REASONING model — it emits a <think> block before its answer, and that is
+// precisely what `response_format: json_object` forbids. Asked in JSON mode it returned
+// `{"code":"json_validate_failed","failed_generation":""}` every single time, so every note fell
+// back to fixed time windows. Asked plainly it answers well, and better than the alternatives:
+// against llama-3.3-70b-versatile and openai/gpt-oss-120b on the same transcript it produced the
+// most specific subheadings and was one of two that spelled the speaker's name as the video title
+// does rather than as the ASR heard it.
+//
+// Override with GROQ_MODEL. https://console.groq.com/docs/models lists what an account can call,
+// https://console.groq.com/docs/rate-limits its ceilings (this model: 8,000 TPM, 200K TPD).
 const MODEL = process.env.GROQ_MODEL || "qwen/qwen3.6-27b";
+
+/**
+ * JSON mode is OFF by default — see above; it is what broke this model outright.
+ *
+ * The dead attempt was still billed, so the retry without the flag then crossed 8,000 TPM
+ * (observed: 3,828 used + 4,459 requested → 429). Two failures compounding into one blank note.
+ * Asked plainly the same request costs 4,578 prompt + 2,048 completion = 6,626 tokens, once.
+ *
+ * Set GROQ_JSON_MODE=on for a non-reasoning model that benefits from strict JSON.
+ */
+const USE_JSON_MODE = process.env.GROQ_JSON_MODE === "on";
+
+/**
+ * Digest budget. `digest()` used to emit one line per 30 s with NO ceiling, so its size scaled with
+ * the recording without limit — measured at ~6,685 tokens for 150 minutes, breaching the allowance
+ * before the reply is even counted. The sampling interval is now derived from the recording's
+ * length, so a 3-hour talk samples more coarsely instead of failing. Coarser sampling only shifts a
+ * proposed boundary to a neighbouring speaker turn, and the turn snap in buildSubheadedSections
+ * decides final placement regardless — nothing structural is lost.
+ */
+const MAX_DIGEST_LINES = 160;
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
 /**
@@ -42,7 +71,7 @@ function give(reason: string, detail?: unknown): null {
   return null;
 }
 
-/** Resolution of the digest sent to the model — one line per this many seconds of speech. */
+/** Finest resolution of the digest — one line per this many seconds, coarsened for long videos. */
 const DIGEST_SECONDS = 30;
 /** Words of speech per digest line. Enough to recognise the subject, cheap in tokens. */
 const DIGEST_WORDS = 14;
@@ -82,10 +111,12 @@ function clock(seconds: number): string {
  * the free tier's per-minute ceiling.
  */
 function digest(segments: AsrSegment[]): string {
+  const span = segments[segments.length - 1].start - segments[0].start;
+  const step = Math.max(DIGEST_SECONDS, Math.ceil(span / MAX_DIGEST_LINES));
   const lines: string[] = [];
   let bucket = -1;
   for (const s of segments) {
-    const b = Math.floor(s.start / DIGEST_SECONDS);
+    const b = Math.floor(s.start / step);
     if (b === bucket) continue;
     bucket = b;
     const words = s.text.split(/\s+/).slice(0, DIGEST_WORDS).join(" ");
@@ -224,8 +255,8 @@ export async function requestAnnotation(
         signal: controller.signal,
       });
 
-    let res = await ask(true);
-    if (res.status === 400) {
+    let res = await ask(USE_JSON_MODE);
+    if (USE_JSON_MODE && res.status === 400) {
       // Not every model on Groq accepts response_format — preview models in particular reject it
       // with a 400 that is indistinguishable from a bad request. The prompt already demands JSON
       // and the parser tolerates prose around it, so drop the flag and ask again rather than lose
@@ -246,7 +277,10 @@ export async function requestAnnotation(
 
     // Without json_object mode the reply can carry prose or a ```json fence around the object, so
     // parse the outermost {...} rather than assuming the whole string is JSON.
-    const raw = content.slice(content.indexOf("{"), content.lastIndexOf("}") + 1);
+    // A reasoning model reasons out loud first. Drop the <think> block before looking for the
+    // object — its prose contains braces of its own, which would otherwise capture the wrong span.
+    const answer = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const raw = answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1);
     if (!raw) return give("reply contained no JSON object", content.slice(0, 300));
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const subheadings = parseSubheadings(parsed.subheadings);

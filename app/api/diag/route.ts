@@ -49,7 +49,7 @@ export async function GET(request: Request) {
     // A wrong model id fails just as silently as a missing key: Groq answers 404 and the note
     // falls back. Reported so it can be checked against console.groq.com/docs/models.
     annotation: {
-      model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b (default)",
+      model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile (default)",
       enabled: Boolean(process.env.GROQ_API_KEY),
     },
     migrations: await migrationState(),
