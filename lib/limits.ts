@@ -15,8 +15,18 @@ export const MAX_AUDIO_HOURS = 3.4;
 export const MAX_AUDIO_SECONDS = MAX_AUDIO_HOURS * 3600;
 
 /**
- * Below this, there is no note worth reading — a Short is a few seconds of speech and produces a
- * single stub section. Only used to keep such videos out of the browse feed; a user who explicitly
- * pastes a link to one still gets it, because that is unambiguously what they asked for.
+ * The browse feed offers podcast-style long-form ONLY — episodes, interviews, lectures, talks.
+ *
+ * This is an absolute floor, not a preference or a ranking nudge. It is applied in one place
+ * (`toFeedResults`) through which every feed video passes, whatever its source — a channel's recent
+ * uploads or the trending chart — so no Short, clip, trailer, music video or reaction can reach the
+ * feed by any route. A channel the user loves contributes its episodes and nothing else.
+ *
+ * Twenty minutes sits under a typical podcast episode or lecture and above essentially everything
+ * that isn't one. It is a DESIGN CHOICE, not a measured threshold — there is no natural boundary
+ * between "clip" and "episode" — but it is deliberately set where short content cannot sneak past.
+ *
+ * Only the FEED is filtered. Search is untouched and a pasted link always works, because in both of
+ * those the user named a specific video, which is unambiguously what they asked for.
  */
-export const MIN_FEED_SECONDS = 60;
+export const MIN_FEED_SECONDS = 20 * 60;

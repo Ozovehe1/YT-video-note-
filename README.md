@@ -277,12 +277,22 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio
   worked and advised raising the Storage limit; a 5 h talk is ~70 MB and the code rejects it, so that
   advice changed nothing.) To lift the ceiling, raise `MAX_AUDIO_HOURS` in [`lib/limits.ts`](lib/limits.ts)
   and `DownloaderService.kt` together with the bucket limit in `supabase/migrations/0006_*.sql`.
-- **The browse feed is Trending, not your YouTube home page.** No YouTube API returns a personalised
-  feed — `activities.list` with `home`/`mine` hasn't for years — and scraping the real front page
-  breaks the Terms and gets the key banned. `chart=mostPopular` is what is actually offered, and it
-  costs 1 quota unit against the 10,000/day pool where `search.list` costs 100, so browsing is
-  cheaper than searching. Videos that are live, under a minute, or longer than the cap are filtered
-  out, so nothing in the feed can fail at creation.
+- **The browse feed is built from your own library, and it only offers long-form talk.** YouTube
+  exposes no personalised feed to any API, and `search.list`'s `relatedToVideoId` — the
+  related-videos parameter — was removed in 2023 with nothing replacing it. So the feed is derived
+  from what you have actually read: recent uploads from the channels in your library, blended with
+  the trending chart restricted to your most-read category (`videoCategoryId` is `videos.list`'s
+  only topic filter, and valid solely alongside `chart`). About 10 quota units per refresh against
+  the 10,000/day pool, and no `search.list`, so it never touches that separate 100-calls/day search
+  bucket.
+  The feed is **podcast-style long-form only**: anything live, longer than the cap, or **shorter
+  than 20 minutes** is filtered out. Verbatim turns talk into reading, and a Short, clip, trailer or
+  music video makes a one-paragraph stub. That floor is absolute and applied in one place every feed
+  video passes through, so nothing short reaches the feed by any route — a channel you follow
+  contributes its episodes and none of its clips. Search and pasted links are never filtered; there
+  you have named the video yourself.
+  A brand-new account gets the search box rather than a feed, since there is nothing yet to
+  recommend from.
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
 - Free tiers are sized for limited users: Supabase (500 MB DB + 1 GB storage), YouTube API daily quota,
   Vercel Hobby, and Modal's monthly GPU credits.

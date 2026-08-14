@@ -5,16 +5,35 @@ import type { SearchResult } from "./types";
 const API = "https://www.googleapis.com/youtube/v3";
 
 /**
- * How wide and how deep the recommendation blend reaches: the top N channels a library implies,
- * and how many recent uploads to take from each.
+ * How wide and how deep the recommendation blend reaches: the top N channels a library implies, and
+ * how many long-form uploads to KEEP from each once the feed filter has run.
  *
- * These are a DESIGN CHOICE, not a tuned or discovered value — there is no right number of channels
- * to draw from. They trade breadth against how much of the feed any one channel can occupy: 6 × 6
- * gives up to 36 channel-sourced videos, capped further by what survives the feed filter. Raise
- * MAX_SEED_CHANNELS for more variety at one extra `playlistItems.list` unit each.
+ * A DESIGN CHOICE, not a tuned or discovered value — there is no right number of channels to draw
+ * from. They trade breadth against how much of the feed any one channel can occupy: up to 36
+ * channel-sourced videos. Raise MAX_SEED_CHANNELS for more variety, at one extra
+ * `playlistItems.list` unit each.
  */
 const MAX_SEED_CHANNELS = 6;
 const UPLOADS_PER_CHANNEL = 6;
+
+/**
+ * How many recent uploads to LOOK AT per channel, to end up with UPLOADS_PER_CHANNEL long-form ones.
+ *
+ * The gap between the two is the whole point. Most channels mix Shorts, clips and trailers in with
+ * their real episodes, so asking for exactly six recent uploads can easily return six things the
+ * feed filter then throws away — leaving a channel the user demonstrably likes contributing nothing.
+ * Looking wider costs no extra quota: `playlistItems.list` is 1 unit whether it returns 6 items or
+ * 30.
+ */
+const UPLOADS_SCANNED_PER_CHANNEL = 30;
+
+/**
+ * How many chart entries to pull when the chart is feeding a long-form filter.
+ *
+ * Trending skews short — music videos, trailers, clips — so most of a page will not survive
+ * MIN_FEED_SECONDS. 50 is the documented maximum and costs the same single unit as 5.
+ */
+const CHART_FETCH_SIZE = 50;
 
 function key(): string {
   const k = process.env.YOUTUBE_API_KEY;
@@ -109,19 +128,34 @@ function toFeedResults(items: VideoItem[]): SearchResult[] {
   return results;
 }
 
-/** Full details for up to 50 ids in one call (1 unit), already filtered to feed-worthy videos. */
+/**
+ * Full details for any number of ids, already filtered to feed-worthy videos.
+ *
+ * `videos.list` accepts at most 50 ids per call, so this CHUNKS rather than truncating. It used to
+ * slice to the first 50 and silently drop the rest, which was harmless only while we asked for
+ * fewer than 50 — and stopped being harmless the moment the long-form filter meant fetching several
+ * times more candidates than we intend to show.
+ */
 async function hydrateVideos(ids: string[]): Promise<SearchResult[]> {
   if (!ids.length) return [];
-  const url = new URL(`${API}/videos`);
-  url.search = new URLSearchParams({
-    key: key(),
-    part: "snippet,contentDetails",
-    id: ids.slice(0, 50).join(","),
-  }).toString();
-  const res = await fetch(url, { next: { revalidate: 900 } });
-  if (!res.ok) return [];
-  const data = (await res.json()) as { items?: VideoItem[] };
-  return toFeedResults(data.items ?? []);
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
+
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const url = new URL(`${API}/videos`);
+      url.search = new URLSearchParams({
+        key: key(),
+        part: "snippet,contentDetails",
+        id: chunk.join(","),
+      }).toString();
+      const res = await fetch(url, { next: { revalidate: 900 } });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { items?: VideoItem[] };
+      return toFeedResults(data.items ?? []);
+    }),
+  );
+  return pages.flat();
 }
 
 /**
@@ -209,14 +243,14 @@ export async function fetchRecommendations(
     id: libraryVideoIds.slice(0, 50).join(","),
   }).toString();
   const seedRes = await fetch(seedUrl, { next: { revalidate: 900 } });
-  if (!seedRes.ok) return unpaged(fetchTrending(regionCode));
+  if (!seedRes.ok) return unpaged(fetchTrending(regionCode, CHART_FETCH_SIZE));
   const seed = (await seedRes.json()) as {
     items?: { snippet?: { channelId?: string; categoryId?: string } }[];
   };
 
   const channels = byFrequency((seed.items ?? []).map((i) => i.snippet?.channelId ?? ""));
   const categories = byFrequency((seed.items ?? []).map((i) => i.snippet?.categoryId ?? ""));
-  if (!channels.length) return unpaged(fetchTrending(regionCode));
+  if (!channels.length) return unpaged(fetchTrending(regionCode, CHART_FETCH_SIZE));
 
   const seen = new Set(libraryVideoIds);
   const fromChannels: SearchResult[][] = [];
@@ -246,7 +280,7 @@ export async function fetchRecommendations(
           key: key(),
           part: "contentDetails",
           playlistId,
-          maxResults: String(UPLOADS_PER_CHANNEL),
+          maxResults: String(UPLOADS_SCANNED_PER_CHANNEL),
         }).toString();
         const r = await fetch(plUrl, { next: { revalidate: 3600 } });
         if (!r.ok) return [];
@@ -260,7 +294,12 @@ export async function fetchRecommendations(
     const hydrated = await hydrateVideos(pages.flat());
     const byId = new Map(hydrated.map((r) => [r.video_id, r]));
     for (const ids of pages) {
-      const group = ids.map((id) => byId.get(id)).filter((r): r is SearchResult => !!r);
+      // Take the long-form survivors, newest first, capped so one prolific channel can't own the
+      // feed. The scan was wide (UPLOADS_SCANNED_PER_CHANNEL); this is where it narrows again.
+      const group = ids
+        .map((id) => byId.get(id))
+        .filter((r): r is SearchResult => !!r)
+        .slice(0, UPLOADS_PER_CHANNEL);
       if (group.length) fromChannels.push(group);
     }
   }
@@ -274,7 +313,7 @@ export async function fetchRecommendations(
       chart: "mostPopular",
       regionCode,
       videoCategoryId: categories[0],
-      maxResults: "24",
+      maxResults: String(CHART_FETCH_SIZE),
     }).toString();
     const catRes = await fetch(catUrl, { next: { revalidate: 900 } });
     if (catRes.ok) {
@@ -297,7 +336,7 @@ export async function fetchRecommendations(
   for (const r of fromCategory) push(r);
 
   // Every signal came back empty (brand-new channels, quota trouble) — never show a blank feed.
-  if (!results.length) return unpaged(fetchTrending(regionCode));
+  if (!results.length) return unpaged(fetchTrending(regionCode, CHART_FETCH_SIZE));
   // No paging: this is a computed blend, not a chart with stable cursors. The list is long enough
   // to scroll, and the client stops asking for more when nextPageToken is null.
   return { results, nextPageToken: null, source: "recommended" };
