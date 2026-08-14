@@ -129,6 +129,21 @@ class ReaderViewModel(private val repo: VerbatimRepository, private val noteId: 
     }
 
     /** Delete this note, then hand back to the caller (which pops the reader). */
+    /** Start a failed note over. The note reverts to a working status and polling resumes. */
+    var retrying by mutableStateOf(false)
+        private set
+
+    fun retry(onError: () -> Unit) {
+        if (retrying) return
+        retrying = true
+        viewModelScope.launch {
+            val ok = repo.retryNote(noteId)
+            note = repo.cachedNote(noteId)
+            retrying = false
+            if (ok) pollWhileProcessing() else onError()
+        }
+    }
+
     fun delete(onDeleted: () -> Unit, onError: () -> Unit) {
         viewModelScope.launch { if (repo.deleteNote(noteId)) onDeleted() else onError() }
     }

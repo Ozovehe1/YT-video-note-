@@ -66,7 +66,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       id,
       ok
         ? { status: "transcribing", error_message: null }
-        : { status: "error", error_message: "Transcription didn’t start — tap retry." },
+        : { status: "error", error_message: "Transcription didn’t start. Tap Try again — the audio is already saved." },
       ok ? { claimed_at: new Date().toISOString() } : {},
     );
     return NextResponse.json({ retry: false, reused: true });

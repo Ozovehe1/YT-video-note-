@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
@@ -129,6 +130,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Start a failed note over without opening it.
+     *
+     * The audio stays in Storage after a note completes, so this usually re-transcribes the file
+     * already on the server rather than sending the phone back to YouTube.
+     */
+    fun retry(id: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = repo.retryNote(id)
+            if (ok) refresh()
+            onResult(ok)
+        }
+    }
+
     fun delete(id: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch { onResult(repo.deleteNote(id)) }
     }
@@ -197,6 +212,15 @@ fun LibraryScreen(
                             NoteCard(
                                 note = note,
                                 onClick = { onOpenNote(note.id) },
+                                onRetry = {
+                                    vm.retry(note.id) { ok ->
+                                        Toast.makeText(
+                                            context,
+                                            if (ok) "Starting “${note.title}” again…" else "Couldn't start it again — check your connection.",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                },
                                 onDelete = { pendingDelete = note },
                             )
                         }
@@ -282,7 +306,7 @@ private fun DeviceStrip(running: Boolean, status: String, onConnect: () -> Unit,
 }
 
 @Composable
-private fun NoteCard(note: Note, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun NoteCard(note: Note, onClick: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit) {
     val colors = VerbatimTheme.colors
     val source = remember { MutableInteractionSource() }
     var menu by remember { mutableStateOf(false) }
@@ -343,6 +367,15 @@ private fun NoteCard(note: Note, onClick: () -> Unit, onDelete: () -> Unit) {
                 Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = colors.muted)
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                // Only a failed note can be retried, and until now nothing in the app could: the
+                // server's own error text said "tap retry" with no such control anywhere.
+                if (note.status == NoteStatus.ERROR) {
+                    DropdownMenuItem(
+                        text = { Text("Try again", color = colors.ink, fontFamily = SansFamily) },
+                        leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null, tint = colors.ink, modifier = Modifier.size(18.dp)) },
+                        onClick = { menu = false; onRetry() },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("Delete", color = colors.oxblood, fontFamily = SansFamily) },
                     leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(18.dp)) },

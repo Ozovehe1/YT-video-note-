@@ -86,7 +86,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     // this same file — no re-download) but still tell the phone "ok" so it doesn't re-fetch.
     await admin
       .from("notes")
-      .update({ status: "error", error_message: "Transcription didn’t start — tap retry." })
+      .update({ status: "error", error_message: "Transcription didn’t start. Tap Try again — the audio is already saved." })
       .eq("id", id)
       .eq("user_id", userId);
   }

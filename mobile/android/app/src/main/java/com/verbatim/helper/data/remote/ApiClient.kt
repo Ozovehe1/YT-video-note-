@@ -67,6 +67,30 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         }
     }
 
+    /**
+     * Re-run a note that failed or looks stuck.
+     *
+     * The endpoint has existed since the pipeline was written and nothing ever called it, so a
+     * failed note was a dead end: the server sets "tap retry" as the error message and there was no
+     * retry to tap. The audio is reused when it is still in Storage, so this usually re-transcribes
+     * without the phone re-downloading anything.
+     */
+    suspend fun retryNote(noteId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val token = tokenProvider() ?: return@withContext Result.failure(Exception("Not signed in"))
+        try {
+            val req = Request.Builder().url("${SupabaseConfig.APP_BASE}/api/notes/$noteId/retry")
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post("{}".toRequestBody(jsonMedia)).build()
+            http.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(Exception("Couldn't start it again (${resp.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /** Mint an agent token for the phone downloader. Returned once. */
     suspend fun mintAgentToken(): Result<String> = withContext(Dispatchers.IO) {
         val token = tokenProvider() ?: return@withContext Result.failure(Exception("Not signed in"))

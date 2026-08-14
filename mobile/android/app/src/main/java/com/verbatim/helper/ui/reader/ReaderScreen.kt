@@ -1,5 +1,7 @@
 package com.verbatim.helper.ui.reader
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -33,6 +35,8 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -187,6 +191,26 @@ fun ReaderScreen(
                         }
                         DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
                             DropdownMenuItem(
+                                text = { Text("Watch on YouTube", style = VerbatimText.body, color = colors.ink) },
+                                onClick = {
+                                    showMore = false
+                                    val url = vm.note?.videoUrl
+                                    if (url.isNullOrBlank()) {
+                                        Toast.makeText(context, "No video link on this note.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        // Hand it to whatever the phone uses for YouTube links — the
+                                        // app if installed, the browser otherwise. runCatching because
+                                        // a device with neither would otherwise crash the reader.
+                                        val opened = runCatching {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                        }.isSuccess
+                                        if (!opened) {
+                                            Toast.makeText(context, "Nothing on this phone can open YouTube links.", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Delete note", style = VerbatimText.body, color = colors.oxblood) },
                                 leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.oxblood, modifier = Modifier.size(18.dp)) },
                                 onClick = { showMore = false; confirmDelete = true },
@@ -218,7 +242,7 @@ fun ReaderScreen(
                     NoteStatus.PROCESSING ->
                         "Writing your note" to "Almost there — laying the transcript out to read."
                     NoteStatus.ERROR ->
-                        "This note failed" to (note.errorMessage ?: "Something went wrong. Try again from the library.")
+                        "This note failed" to (note.errorMessage ?: "Something went wrong.")
                     else -> "Not downloaded yet" to "Go online once to open this note; it reads offline afterwards."
                 }
                 Column(
@@ -237,6 +261,36 @@ fun ReaderScreen(
                     Text(headline, style = VerbatimText.screenTitle, color = colors.ink, textAlign = TextAlign.Center)
                     Spacer(Modifier.height(Space.sm))
                     Text(detail, style = VerbatimText.secondary, color = colors.muted, textAlign = TextAlign.Center)
+
+                    // A failed note used to end here — the message said "tap retry" and there was
+                    // nothing to tap, so the note was stuck for good. The endpoint existed the whole
+                    // time; only the button was missing.
+                    if (note?.status == NoteStatus.ERROR) {
+                        Spacer(Modifier.height(Space.xl))
+                        Button(
+                            onClick = {
+                                vm.retry {
+                                    Toast.makeText(context, "Couldn't start it again — check your connection.", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            enabled = !vm.retrying,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.oxblood,
+                                contentColor = colors.surface,
+                            ),
+                        ) {
+                            Text(if (vm.retrying) "Starting…" else "Try again", style = VerbatimText.labelStrong)
+                        }
+                        Spacer(Modifier.height(Space.sm))
+                        // The reason people hesitate to retry is the fear of burning data again.
+                        // The endpoint reuses the stored audio, so say so.
+                        Text(
+                            "The audio is already saved — this re-transcribes it without downloading again.",
+                            style = VerbatimText.secondary,
+                            color = colors.muted,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
             } else {
                 LazyColumn(

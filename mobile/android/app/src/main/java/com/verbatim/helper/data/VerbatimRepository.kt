@@ -35,6 +35,13 @@ class VerbatimRepository private constructor(context: Context) {
     // ---- app API (search / create / connect device) ----
     suspend fun search(query: String, pageToken: String? = null) = api.search(query, pageToken)
     suspend fun createNote(input: String) = api.createNote(input)
+    /** Re-run a failed note. Reuses the stored audio, so it usually costs no mobile data. */
+    suspend fun retryNote(id: String): Boolean {
+        val ok = api.retryNote(id).isSuccess
+        if (ok) refreshNote(id)
+        return ok
+    }
+
     suspend fun mintAgentToken() = api.mintAgentToken()
 
     /** A valid access token for authenticating a system DownloadManager export request. */
