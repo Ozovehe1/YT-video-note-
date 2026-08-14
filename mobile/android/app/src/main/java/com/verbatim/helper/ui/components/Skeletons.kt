@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -79,6 +80,32 @@ fun NoteCardSkeleton() {
             Spacer(Modifier.height(10.dp))
             ShimmerBox(Modifier.width(90.dp).height(10.dp))
         }
+    }
+}
+
+/** One browse-feed placeholder — mirrors FeedCard's wide thumbnail and two text lines. */
+@Composable
+fun FeedCardSkeleton() {
+    Column(Modifier.fillMaxWidth()) {
+        ShimmerBox(Modifier.fillMaxWidth().aspectRatio(16f / 9f), Shape.card)
+        Spacer(Modifier.height(Space.sm))
+        ShimmerBox(Modifier.fillMaxWidth(0.85f).height(14.dp))
+        Spacer(Modifier.height(8.dp))
+        ShimmerBox(Modifier.fillMaxWidth(0.45f).height(12.dp))
+    }
+}
+
+/**
+ * The browse feed while it loads. Two cards, not five: a feed card is tall, so more than that is
+ * shimmer nobody scrolls to before the real thing arrives.
+ */
+@Composable
+fun FeedSkeleton() {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = Space.sm),
+        verticalArrangement = Arrangement.spacedBy(Space.xl),
+    ) {
+        repeat(2) { FeedCardSkeleton() }
     }
 }
 

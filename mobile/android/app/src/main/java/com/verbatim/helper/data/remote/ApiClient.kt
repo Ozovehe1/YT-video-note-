@@ -47,6 +47,34 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         }
     }
 
+    /**
+     * The trending chart, used as the browse feed behind the search box.
+     *
+     * Shares SearchPage with search() because the server returns the same shape, so the screen can
+     * render either list with one row composable. `region` is the device's own country — the chart
+     * is per-country, and the server falls back to US for any country YouTube doesn't publish one
+     * for, so a wrong or missing locale still yields a feed rather than an error.
+     */
+    suspend fun trending(region: String?, pageToken: String? = null): SearchPage = withContext(Dispatchers.IO) {
+        val token = tokenProvider() ?: throw IllegalStateException("Not signed in")
+        val url = buildString {
+            append("${SupabaseConfig.APP_BASE}/api/trending")
+            val parts = mutableListOf<String>()
+            if (!region.isNullOrBlank()) parts += "region=" + URLEncoder.encode(region, "UTF-8")
+            if (!pageToken.isNullOrBlank()) parts += "pageToken=" + URLEncoder.encode(pageToken, "UTF-8")
+            if (parts.isNotEmpty()) append("?").append(parts.joinToString("&"))
+        }
+        val req = Request.Builder().url(url)
+            .header("Authorization", "Bearer $token")
+            .get().build()
+        http.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IllegalStateException("Couldn't load videos (${resp.code})")
+            val dto = json.decodeFromString<SearchResponseDto>(text)
+            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken)
+        }
+    }
+
     /** Create a note from a URL or a video id. Returns the new note's id. */
     suspend fun createNote(input: String): Result<String> = withContext(Dispatchers.IO) {
         val token = tokenProvider() ?: return@withContext Result.failure(Exception("Not signed in"))

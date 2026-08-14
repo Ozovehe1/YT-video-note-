@@ -34,6 +34,19 @@ class VerbatimRepository private constructor(context: Context) {
 
     // ---- app API (search / create / connect device) ----
     suspend fun search(query: String, pageToken: String? = null) = api.search(query, pageToken)
+
+    /**
+     * The trending feed shown before anyone types. The region comes from the device's own
+     * configuration rather than being asked for — the chart is per-country, and a wrong guess costs
+     * nothing because the server falls back to the US chart.
+     */
+    suspend fun trending(pageToken: String? = null) = api.trending(deviceRegion(), pageToken)
+
+    private fun deviceRegion(): String? {
+        val locales = appContext.resources.configuration.locales
+        val country = if (locales.isEmpty) null else locales[0].country
+        return country?.takeIf { it.length == 2 }
+    }
     suspend fun createNote(input: String) = api.createNote(input)
     /** Re-run a failed note. Reuses the stored audio, so it usually costs no mobile data. */
     suspend fun retryNote(id: String): Boolean {

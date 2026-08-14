@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,7 +19,9 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -31,10 +34,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,7 +55,9 @@ import coil.compose.AsyncImage
 import com.verbatim.helper.data.VerbatimRepository
 import com.verbatim.helper.data.model.SearchResult
 import com.verbatim.helper.ui.components.EmptyState
+import com.verbatim.helper.ui.components.FeedSkeleton
 import com.verbatim.helper.ui.components.PrimaryButton
+import com.verbatim.helper.ui.components.SecondaryButton
 import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.Shape
 import com.verbatim.helper.ui.theme.Space
@@ -78,10 +86,66 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     var searched by mutableStateOf(false)
         private set
 
+    // ---- browse feed (trending), shown whenever the search box is empty ----
+    var feed by mutableStateOf<List<SearchResult>>(emptyList())
+        private set
+    var feedLoading by mutableStateOf(false)
+        private set
+    var feedError by mutableStateOf<String?>(null)
+        private set
+    private var feedToken: String? = null
+    /** Set when the chart runs out of pages, so the list stops asking for more. */
+    private var feedExhausted = false
+    private var feedJob: Job? = null
+
     private var searchJob: Job? = null
 
     val looksLikeLink: Boolean
         get() = query.trim().let { it.contains("youtu", true) || it.startsWith("http", true) }
+
+    /** True when the browse feed — rather than search results — is what the body should show. */
+    val showingFeed: Boolean
+        get() = query.trim().isEmpty()
+
+    init {
+        loadFeed()
+    }
+
+    /**
+     * First page of the feed. Cheap enough to do on open: the server's chart call is 1 quota unit
+     * and is cached for 15 minutes, so re-entering this screen usually spends nothing at all.
+     */
+    fun loadFeed(reset: Boolean = false) {
+        if (feedLoading) return
+        if (reset) { feedToken = null; feedExhausted = false; feed = emptyList() }
+        if (feedExhausted) return
+        feedJob?.cancel()
+        feedJob = viewModelScope.launch {
+            feedLoading = true; feedError = null
+            try {
+                val page = repo.trending(feedToken)
+                // YouTube can repeat a video across page boundaries, and a duplicate id would
+                // crash LazyColumn's `key`. Dedupe on append rather than trusting the API.
+                val seen = feed.mapTo(HashSet()) { it.videoId }
+                feed = feed + page.results.filter { seen.add(it.videoId) }
+                feedToken = page.nextPageToken
+                feedExhausted = page.nextPageToken == null || page.results.isEmpty()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Only an empty feed is worth an error screen; a failed *next* page just stops
+                // paging, because the user still has everything above it to read.
+                if (feed.isEmpty()) feedError = "Couldn't load videos — check your connection."
+                feedExhausted = true
+            }
+            feedLoading = false
+        }
+    }
+
+    /** Called when the feed is scrolled near its end. */
+    fun loadMoreFeed() {
+        if (!feedLoading && !feedExhausted && feed.isNotEmpty()) loadFeed()
+    }
 
     /**
      * Search as the user types, debounced.
@@ -96,7 +160,8 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
         searchJob?.cancel()
         val q = value.trim()
         if (q.isEmpty() || looksLikeLink) {
-            // A pasted link isn't a search term — the Create button handles it.
+            // A pasted link isn't a search term — the Create button handles it. Clearing the box
+            // returns to the feed, which is still in memory, so that costs no request.
             results = emptyList(); searched = false; loading = false
             return
         }
@@ -155,6 +220,7 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
         focusedTextColor = colors.ink, unfocusedTextColor = colors.ink, cursorColor = colors.oxblood,
         focusedContainerColor = colors.surface, unfocusedContainerColor = colors.surface,
     )
+    val feedState = rememberLazyListState()
 
     Column(
         Modifier.fillMaxSize().background(colors.paper).safeDrawingPadding(),
@@ -219,15 +285,24 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
                         Text("Creating your note…", style = VerbatimText.secondary, color = colors.muted)
                     }
                 }
+
+                // A pasted link: the button above is the whole interaction, so say that rather than
+                // showing a feed the user has already scrolled past deciding.
+                vm.looksLikeLink -> EmptyState(
+                    icon = Icons.Filled.Search,
+                    title = "Ready when you are",
+                    subtitle = "Tap “Create note from link” and we'll fetch this video.",
+                )
+
+                // --- browse: the empty box shows the feed, not an empty page ---
+                vm.showingFeed -> BrowseFeed(vm, feedState) { r ->
+                    vm.create("https://www.youtube.com/watch?v=${r.videoId}", onCreated)
+                }
+
                 vm.results.isEmpty() && vm.searched && !vm.loading -> EmptyState(
                     icon = Icons.Filled.Search,
                     title = "No videos found",
                     subtitle = "Try different words, or paste the video's link instead.",
-                )
-                vm.results.isEmpty() && !vm.looksLikeLink -> EmptyState(
-                    icon = Icons.Filled.Search,
-                    title = "Find something to read",
-                    subtitle = "Search by title — or paste a YouTube link and we'll take it from there.",
                 )
                 else -> LazyColumn(
                     contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
@@ -239,6 +314,127 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
                 }
             }
         }
+    }
+}
+
+/**
+ * The scrolling browse feed shown before anyone types — this screen used to open on a search box
+ * above a page of nothing, which asks the user to already know what they want.
+ *
+ * These are YouTube's trending videos, and they are laid out the way a video feed is: one wide
+ * card per row rather than the compact rows search uses. Videos too long for the pipeline and
+ * live broadcasts are filtered out server-side, so everything here can actually become a note.
+ */
+@Composable
+private fun BrowseFeed(
+    vm: NewNoteViewModel,
+    state: LazyListState,
+    onPick: (SearchResult) -> Unit,
+) {
+    val colors = VerbatimTheme.colors
+
+    // Ask for the next page a few cards before the bottom, so the list is already longer by the
+    // time the user gets there and the scroll never visibly stops.
+    val nearEnd by remember(state) {
+        derivedStateOf {
+            val last = state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = state.layoutInfo.totalItemsCount
+            total > 0 && last >= total - 3
+        }
+    }
+    LaunchedEffect(state) {
+        snapshotFlow { nearEnd }.collect { if (it) vm.loadMoreFeed() }
+    }
+
+    when {
+        vm.feed.isEmpty() && vm.feedLoading -> FeedSkeleton()
+
+        vm.feed.isEmpty() && vm.feedError != null -> Column(
+            Modifier.fillMaxSize().padding(horizontal = Space.gutter),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                vm.feedError!!, style = VerbatimText.body, color = colors.muted,
+                modifier = Modifier.padding(bottom = Space.lg),
+            )
+            // The feed failing must not take the search box down with it, so this offers the
+            // retry and says the box above still works.
+            SecondaryButton(text = "Try again", onClick = { vm.loadFeed(reset = true) })
+            Spacer(Modifier.height(Space.md))
+            Text(
+                "You can still search, or paste a link.",
+                style = VerbatimText.secondary, color = colors.muted,
+            )
+        }
+
+        vm.feed.isEmpty() -> EmptyState(
+            icon = Icons.Filled.Search,
+            title = "Find something to read",
+            subtitle = "Search by title — or paste a YouTube link and we'll take it from there.",
+        )
+
+        else -> LazyColumn(
+            state = state,
+            contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
+            verticalArrangement = Arrangement.spacedBy(Space.xl),
+        ) {
+            items(vm.feed, key = { it.videoId }) { r -> FeedCard(r) { onPick(r) } }
+            if (vm.feedLoading) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(Space.lg), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = colors.oxblood, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One feed card: a wide thumbnail with the title and channel beneath it. */
+@Composable
+private fun FeedCard(r: SearchResult, onClick: () -> Unit) {
+    val colors = VerbatimTheme.colors
+    val source = remember { MutableInteractionSource() }
+    Column(
+        Modifier.fillMaxWidth().pressScale(source)
+            .clickable(interactionSource = source, indication = null, onClick = onClick),
+    ) {
+        Box {
+            AsyncImage(
+                model = r.thumbnail, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(Shape.card)
+                    .background(colors.hairline.copy(alpha = 0.5f)),
+            )
+            // Duration sits on the thumbnail, where every video UI puts it, instead of competing
+            // with the channel name for the line below.
+            r.durationLabel?.let {
+                Text(
+                    it,
+                    style = VerbatimText.meta,
+                    color = colors.paper,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(Space.sm)
+                        .clip(Shape.chip)
+                        .background(colors.ink.copy(alpha = 0.78f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(Space.sm))
+        Text(
+            r.title, style = VerbatimText.cardTitle, color = colors.ink,
+            maxLines = 2, overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            r.channel, style = VerbatimText.secondary, color = colors.muted,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

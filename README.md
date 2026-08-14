@@ -41,8 +41,10 @@ automatically. You only ever paste a link; the app's own background service does
 
 ```
 Native Android app (mobile/)
-  1. You paste a link / search a title  →  the app calls the API to create a
-     note as "awaiting_audio"                                                (app/api/notes)
+  1. You pick a video from the browse feed, search a title, or paste a link  →
+     the app calls the API to create a note as "awaiting_audio"              (app/api/notes)
+     The feed is YouTube's trending chart (1 quota unit vs search's 100),
+     filtered to what the pipeline can actually turn into a note             (app/api/trending)
 
 Same app, background downloader service
   2. Polls the agent API, claims the note, downloads bestaudio with yt-dlp
@@ -231,6 +233,7 @@ app/
   layout.tsx                     landing chrome (nav = brand + Download)
   api/
     search/                      YouTube title search
+    trending/                    the browse feed (chart=mostPopular, 1 quota unit)
     notes/                       create note (→ awaiting_audio)
     notes/pending/               notes still processing (status polling)
     notes/[id]/retry/            re-queue a stuck/errored note
@@ -243,6 +246,7 @@ app/
     diag/                        env-presence diagnostics
 lib/
   youtube, asr-kickoff, agent-auth, types, utils
+  limits         the pipeline's ceilings (max recording length) in one place
   segment        cut the note at subject changes, snapped to speaker turns
   speakers       resolve who is talking: verified name → role → Speaker N
   annotate       the one model call — subheadings + speakers, labels only
@@ -252,7 +256,7 @@ lib/
 agent/                           Modal ASR service (modal_asr.py)
 mobile/                          the native Android app — the whole product UI + downloader (+ CI)
 supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio_path,
-                                 0005_pipeline_state
+                                 0005_pipeline_state, 0006_audio_size_limit
 ```
 
 ## Notes & limits
@@ -271,8 +275,14 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio
   lands. A longer video is refused **when you create the note**, naming its duration, so the phone
   never spends mobile data on something that cannot finish. (This paragraph used to claim a 5 h talk
   worked and advised raising the Storage limit; a 5 h talk is ~70 MB and the code rejects it, so that
-  advice changed nothing.) To lift the ceiling, raise `MAX_AUDIO_HOURS` in `app/api/notes/route.ts`
+  advice changed nothing.) To lift the ceiling, raise `MAX_AUDIO_HOURS` in [`lib/limits.ts`](lib/limits.ts)
   and `DownloaderService.kt` together with the bucket limit in `supabase/migrations/0006_*.sql`.
+- **The browse feed is Trending, not your YouTube home page.** No YouTube API returns a personalised
+  feed — `activities.list` with `home`/`mine` hasn't for years — and scraping the real front page
+  breaks the Terms and gets the key banned. `chart=mostPopular` is what is actually offered, and it
+  costs 1 quota unit against the 10,000/day pool where `search.list` costs 100, so browsing is
+  cheaper than searching. Videos that are live, under a minute, or longer than the cap are filtered
+  out, so nothing in the feed can fail at creation.
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
 - Free tiers are sized for limited users: Supabase (500 MB DB + 1 GB storage), YouTube API daily quota,
   Vercel Hobby, and Modal's monthly GPU credits.

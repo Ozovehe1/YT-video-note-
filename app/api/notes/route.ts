@@ -4,15 +4,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { extractVideoId } from "@/lib/utils";
 import { fetchVideoMeta } from "@/lib/youtube";
 import { findReusableAudio, kickModalAsr, originFrom } from "@/lib/asr-kickoff";
+import { MAX_AUDIO_HOURS, MAX_AUDIO_SECONDS } from "@/lib/limits";
 
 export const maxDuration = 60;
-
-/**
- * The longest recording the pipeline accepts. Mirrors DownloaderService.MAX_AUDIO_HOURS — the phone
- * enforces the same ceiling as a backstop for a note created before this check existed, but the
- * refusal belongs HERE, where no data has been spent yet.
- */
-const MAX_AUDIO_HOURS = 3.4;
 
 /**
  * Create a note. The audio is fetched on the user's phone (residential IP) and transcribed on
@@ -58,7 +52,7 @@ export async function POST(request: Request) {
   // 50 MB. Without this check the phone downloaded the whole video on mobile data, transcoded
   // it, and only then hit the size wall — the user paying for the data twice over to be told no.
   // The duration is already in hand here, from the same metadata call.
-  if (meta.duration_seconds && meta.duration_seconds > MAX_AUDIO_HOURS * 3600) {
+  if (meta.duration_seconds && meta.duration_seconds > MAX_AUDIO_SECONDS) {
     const hrs = Math.floor(meta.duration_seconds / 3600);
     const mins = Math.round((meta.duration_seconds % 3600) / 60);
     return NextResponse.json(
