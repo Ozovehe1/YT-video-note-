@@ -319,7 +319,11 @@ class DownloaderService : Service() {
         // Extractor arguments, if this strategy uses any. NEVER `formats=missing_pot` — see
         // DOWNLOAD_STRATEGIES.
         if (extractorArgs != null) request.addOption("--extractor-args", extractorArgs)
-        request.addOption("--user-agent", MOBILE_UA)
+        // NO --user-agent override. yt-dlp sends the User-Agent that matches whichever player
+        // client it is impersonating, and forcing a single Chrome-mobile string over all of them
+        // makes every request self-contradictory — an android_vr API call arriving with a desktop
+        // Chrome UA is easier to fingerprint as automated than the header yt-dlp would have sent.
+        // Blending in is what the client impersonation is FOR; overriding its headers defeats it.
         request.addOption("--add-header", "Accept-Language: en-US,en;q=0.9")
         // Ride out transient 429s (retry ~10× with exponential backoff on HTTP errors).
         // Without a socket timeout a half-open connection hangs the whole transfer indefinitely —
@@ -553,9 +557,6 @@ class DownloaderService : Service() {
         /** Publish download progress at most every N percent (see downloadAudio). */
         private const val PROGRESS_STEP_PERCENT = 5
         /** A current mobile-Chrome User-Agent so yt-dlp's requests look like a real phone browser. */
-        private const val MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/126.0.0.0 Mobile Safari/537.36"
         /**
          * Extraction strategies, tried in order until one produces a file. `null` means "pass no
          * --extractor-args at all", i.e. yt-dlp's own defaults.
@@ -570,14 +571,24 @@ class DownloaderService : Service() {
          * and the download dies with HTTP 403 after extraction appears to succeed. That is the exact
          * failure seen here, and it is self-inflicted.
          *
-         * The second strategy keeps the anti-bot client set for the case the defaults are being
-         * rate-limited, minus the `tv` client (yt-dlp #12563 marks every video DRM-protected there
-         * and aborts the whole extraction) and minus missing_pot. Failures happen during extraction,
-         * before bytes move, so a second attempt costs seconds rather than mobile data.
+         * The second strategy names ONLY clients that need no PO token. yt-dlp's own PO Token Guide
+         * splits them cleanly: `web`, `web_safari`, `mweb`, `tv_simply`, `web_music`, `web_creator`,
+         * `android` and `ios` all require a token to fetch the media, while `tv`, `android_vr` and
+         * `web_embedded` do not — and without a token a gated client "may return HTTP Error 403, or
+         * result in your account or IP address being blocked".
+         *
+         * This list used to be `default,android_vr,mweb,ios,web_safari`, three of which are gated.
+         * That is the same self-inflicted failure as `formats=missing_pot`: offering yt-dlp formats
+         * it cannot actually download, so whether a note succeeded depended on which format the
+         * selector happened to pick. `tv` is left out despite being token-free because yt-dlp #12563
+         * marks every video DRM-protected there and aborts extraction outright — observed here.
+         *
+         * Failures happen during extraction, before bytes move, so a second attempt costs seconds
+         * rather than mobile data.
          */
         private val DOWNLOAD_STRATEGIES: List<String?> = listOf(
             null,
-            "youtube:player_client=default,android_vr,mweb,ios,web_safari",
+            "youtube:player_client=android_vr,web_embedded",
         )
 
         /** Runaway guard on the source stream, before transcoding. */
