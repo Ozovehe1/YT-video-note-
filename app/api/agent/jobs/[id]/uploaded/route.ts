@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateAgentDetailed } from "@/lib/agent-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { kickModalAsr, originFrom, setAudioPath, patchNote } from "@/lib/asr-kickoff";
+import { getAudioPath, kickModalAsr, originFrom, setAudioPath, patchNote } from "@/lib/asr-kickoff";
 
 export const maxDuration = 60;
 
@@ -40,11 +40,34 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const admin = createAdminClient();
   const { data: note } = await admin
     .from("notes")
-    .select("id")
+    .select("id, status")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
   if (!note) return NextResponse.json({ error: "Note not found." }, { status: 404 });
+
+  // A replayed handoff must not start a second transcription.
+  //
+  // This endpoint used to kick Modal unconditionally, and a kick is not cheap: it fans a multi-hour
+  // video out across dozens of parallel GPU workers. The phone posts here over an OkHttp client
+  // whose retryOnConnectionFailure defaults to true, so a connection dropped AFTER the server had
+  // already handled the request was retried transparently — and arrived as a brand-new job. One
+  // upload, two full fan-outs, double the GPU bill for a single note.
+  //
+  // The check is deliberately narrow: same note, already transcribing, and the audio already
+  // recorded at this exact path — which together can only mean "we have seen this exact POST".
+  // Anything else still kicks, so the paths that are SUPPOSED to re-run a transcribing note
+  // (notes/[id]/retry, and the ASR callback's bounded requeue) are untouched.
+  //
+  // asr-callback does the same thing for its own replays; this is that guard's counterpart on the
+  // way in.
+  //
+  // The path is read through getAudioPath, which isolates the optional `audio_path` column and
+  // returns null if migration 0004 hasn't run. On such a database the guard simply never matches
+  // and behaviour is exactly as before — it must not be able to 404 a real job.
+  if (note.status === "transcribing" && (await getAudioPath(admin, id)) === storagePath) {
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
 
   // Mark it transcribing and record the uploaded file. The audio_path write is best-effort — it
   // no-ops if that column isn't there yet, without blocking transcription. Re-stamping claimed_at

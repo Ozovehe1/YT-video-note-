@@ -56,6 +56,12 @@ class DownloaderService : Service() {
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.MINUTES) // large uploads
         .writeTimeout(15, TimeUnit.MINUTES)
+        // OkHttp retries a request by itself when a connection fails, and it can't tell a connection
+        // that died BEFORE the server handled the request from one that died after. For our POSTs
+        // that difference matters: /uploaded starts a transcription that fans a video out across
+        // dozens of GPU workers, so a silent replay costs a second full run. Retrying is this
+        // service's decision to make — it already loops over jobs — not the transport's.
+        .retryOnConnectionFailure(false)
         .build()
 
     override fun onBind(intent: Intent?): IBinder? = null
