@@ -98,6 +98,18 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     private var feedExhausted = false
     private var feedJob: Job? = null
 
+    /**
+     * What the feed above the list should be called.
+     *
+     * Only the server knows whether it managed to personalise, so it says so and this reads it —
+     * never inferred from "the library looks non-empty", which would eventually label the trending
+     * fallback as someone's recommendations.
+     */
+    var feedTitle by mutableStateOf<String?>(null)
+        private set
+    var feedSubtitle by mutableStateOf<String?>(null)
+        private set
+
     private var searchJob: Job? = null
 
     val looksLikeLink: Boolean
@@ -123,13 +135,22 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
         feedJob = viewModelScope.launch {
             feedLoading = true; feedError = null
             try {
-                val page = repo.trending(feedToken)
+                val page = repo.recommendations()
                 // YouTube can repeat a video across page boundaries, and a duplicate id would
                 // crash LazyColumn's `key`. Dedupe on append rather than trusting the API.
                 val seen = feed.mapTo(HashSet()) { it.videoId }
                 feed = feed + page.results.filter { seen.add(it.videoId) }
                 feedToken = page.nextPageToken
                 feedExhausted = page.nextPageToken == null || page.results.isEmpty()
+                if (page.source == "recommended") {
+                    feedTitle = "For you"
+                    feedSubtitle = "Based on the channels and topics in your library"
+                } else {
+                    // Say what it is. Calling generic trending "recommended" is a small lie the
+                    // user can catch the first time they open a brand-new account.
+                    feedTitle = "Trending"
+                    feedSubtitle = "Make a few notes and this becomes recommendations"
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -379,6 +400,19 @@ private fun BrowseFeed(
             contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
             verticalArrangement = Arrangement.spacedBy(Space.xl),
         ) {
+            // Header inside the list, so it scrolls away with the content instead of taking
+            // permanent height on a screen whose whole job is browsing.
+            vm.feedTitle?.let { title ->
+                item(key = "feed-header") {
+                    Column(Modifier.padding(bottom = Space.xs)) {
+                        Text(title, style = VerbatimText.cardTitle, color = colors.ink)
+                        vm.feedSubtitle?.let {
+                            Spacer(Modifier.height(2.dp))
+                            Text(it, style = VerbatimText.secondary, color = colors.muted)
+                        }
+                    }
+                }
+            }
             items(vm.feed, key = { it.videoId }) { r -> FeedCard(r) { onPick(r) } }
             if (vm.feedLoading) {
                 item {

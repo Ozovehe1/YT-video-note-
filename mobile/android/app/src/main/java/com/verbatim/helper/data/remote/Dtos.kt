@@ -60,6 +60,11 @@ data class SearchResultDto(
 data class SearchResponseDto(
     val results: List<SearchResultDto> = emptyList(),
     val nextPageToken: String? = null,
+    /**
+     * Which feed the server actually served: "recommended" (built from this user's library) or
+     * "trending" (nothing to personalise on yet). Absent on /api/search, which is neither.
+     */
+    val source: String? = null,
     val error: String? = null,
 )
 

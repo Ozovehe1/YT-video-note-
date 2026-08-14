@@ -11,7 +11,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-data class SearchPage(val results: List<SearchResult>, val nextPageToken: String?)
+/**
+ * A page of the browse feed. [source] is "recommended" when the server built the list from this
+ * user's library, or "trending" when there was nothing to personalise on — the screen labels the
+ * list from it, so the two are never conflated. Null for plain search results.
+ */
+data class SearchPage(
+    val results: List<SearchResult>,
+    val nextPageToken: String?,
+    val source: String? = null,
+)
 
 /**
  * Calls the Verbatim web app's own API (search / create-note / mint-agent-token) on the Vercel
@@ -43,7 +52,32 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw IllegalStateException("Search failed (${resp.code})")
             val dto = json.decodeFromString<SearchResponseDto>(text)
-            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken)
+            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken, dto.source)
+        }
+    }
+
+    /**
+     * The browse feed, built from this user's own library — the channels they read and the
+     * category they read most.
+     *
+     * The server falls back to the plain trending chart whenever there is no signal to personalise
+     * on (a brand-new account) or a lookup fails, so this never returns an empty feed and the
+     * screen needs no separate "no recommendations" state.
+     */
+    suspend fun recommendations(region: String?): SearchPage = withContext(Dispatchers.IO) {
+        val token = tokenProvider() ?: throw IllegalStateException("Not signed in")
+        val url = buildString {
+            append("${SupabaseConfig.APP_BASE}/api/recommend")
+            if (!region.isNullOrBlank()) append("?region=").append(URLEncoder.encode(region, "UTF-8"))
+        }
+        val req = Request.Builder().url(url)
+            .header("Authorization", "Bearer $token")
+            .get().build()
+        http.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IllegalStateException("Couldn't load videos (${resp.code})")
+            val dto = json.decodeFromString<SearchResponseDto>(text)
+            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken, dto.source)
         }
     }
 
@@ -71,7 +105,7 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw IllegalStateException("Couldn't load videos (${resp.code})")
             val dto = json.decodeFromString<SearchResponseDto>(text)
-            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken)
+            SearchPage(dto.results.map { it.toDomain() }, dto.nextPageToken, dto.source)
         }
     }
 

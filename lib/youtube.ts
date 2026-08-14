@@ -4,6 +4,18 @@ import type { SearchResult } from "./types";
 
 const API = "https://www.googleapis.com/youtube/v3";
 
+/**
+ * How wide and how deep the recommendation blend reaches: the top N channels a library implies,
+ * and how many recent uploads to take from each.
+ *
+ * These are a DESIGN CHOICE, not a tuned or discovered value — there is no right number of channels
+ * to draw from. They trade breadth against how much of the feed any one channel can occupy: 6 × 6
+ * gives up to 36 channel-sourced videos, capped further by what survives the feed filter. Raise
+ * MAX_SEED_CHANNELS for more variety at one extra `playlistItems.list` unit each.
+ */
+const MAX_SEED_CHANNELS = 6;
+const UPLOADS_PER_CHANNEL = 6;
+
 function key(): string {
   const k = process.env.YOUTUBE_API_KEY;
   if (!k) throw new Error("YOUTUBE_API_KEY is not set.");
@@ -66,9 +78,17 @@ export async function fetchTrending(
     throw new Error(`YouTube trending failed (${res.status}): ${body.slice(0, 200)}`);
   }
   const data = (await res.json()) as { items?: VideoItem[]; nextPageToken?: string };
+  return { results: toFeedResults(data.items ?? []), nextPageToken: data.nextPageToken ?? null };
+}
 
+/**
+ * Turn raw `videos.list` items into feed cards, dropping everything the pipeline could not turn
+ * into a note. Shared by the trending chart and the recommender so one filter governs both — a
+ * video that is a dead end in one feed must be a dead end in the other.
+ */
+function toFeedResults(items: VideoItem[]): SearchResult[] {
   const results: SearchResult[] = [];
-  for (const item of data.items ?? []) {
+  for (const item of items) {
     if (!item.id || !item.contentDetails?.duration) continue;
     // A live or upcoming broadcast has no finished audio to download; offering one in the feed is
     // offering a note that cannot be made.
@@ -86,7 +106,191 @@ export async function fetchTrending(
       duration_label: formatDuration(secs),
     });
   }
-  return { results, nextPageToken: data.nextPageToken ?? null };
+  return results;
+}
+
+/** Full details for up to 50 ids in one call (1 unit), already filtered to feed-worthy videos. */
+async function hydrateVideos(ids: string[]): Promise<SearchResult[]> {
+  if (!ids.length) return [];
+  const url = new URL(`${API}/videos`);
+  url.search = new URLSearchParams({
+    key: key(),
+    part: "snippet,contentDetails",
+    id: ids.slice(0, 50).join(","),
+  }).toString();
+  const res = await fetch(url, { next: { revalidate: 900 } });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { items?: VideoItem[] };
+  return toFeedResults(data.items ?? []);
+}
+
+/**
+ * A browse-feed page, plus WHICH feed it actually is.
+ *
+ * The UI labels the list for the user, and the two cases are genuinely different: a blend built
+ * from their library, or the generic trending chart because there was nothing to personalise on.
+ * The server is the only side that knows which happened, so it says, rather than letting the app
+ * infer it and eventually call trending "recommended for you".
+ */
+export type FeedPage = {
+  results: SearchResult[];
+  nextPageToken: string | null;
+  source: "recommended" | "trending";
+};
+
+/**
+ * Drop a page cursor from a fallback result.
+ *
+ * The recommendation blend is computed, not a chart, so it has no cursor to resume from and
+ * `/api/recommend` accepts no `pageToken`. Its fallbacks call `fetchTrending`, which DOES return
+ * one — handing that token to a caller would promise a next page that nothing can serve. Nulling it
+ * keeps one contract for the endpoint: this feed arrives complete and does not page.
+ */
+async function unpaged(
+  p: Promise<{ results: SearchResult[]; nextPageToken: string | null }>,
+): Promise<FeedPage> {
+  // Every caller of this is a fallback, so the feed is plain trending — say so, and let the UI
+  // label it honestly instead of calling generic videos "recommended".
+  return { results: (await p).results, nextPageToken: null, source: "trending" };
+}
+
+/** Most frequent values first — how we rank the channels and categories a library implies. */
+function byFrequency(values: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const v of values) if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v);
+}
+
+/**
+ * Recommendations built from the user's own library.
+ *
+ * **There is no recommendations API, and there is no longer a related-videos one.** `search.list`'s
+ * `relatedToVideoId` was deprecated on 12 June 2023 and removed, and nothing replaced it; a
+ * personalised feed has never been exposed to any API key. So this does not ask YouTube "what is
+ * like this" — it derives the two interest signals a library actually contains and asks YouTube
+ * questions it will still answer:
+ *
+ *   1. WHO they read — more recent uploads from the channels they have made notes from.
+ *   2. WHAT they read about — the trending chart restricted to their most-read category, which is
+ *      the one place `videos.list` accepts a topic filter (`videoCategoryId` is only valid
+ *      alongside `chart`).
+ *
+ * Cost is a handful of units: one `videos.list` resolves EVERY library video's channel and category
+ * at once, one batched `channels.list` turns those channels into uploads playlists, then one
+ * `playlistItems.list` per channel. No `search.list` anywhere, so this never touches the 100-call
+ * daily search bucket.
+ *
+ * Videos already in the library are excluded — recommending someone a note they have already made
+ * is the fastest way to look broken.
+ */
+export async function fetchRecommendations(
+  libraryVideoIds: string[],
+  regionCode = "US",
+): Promise<FeedPage> {
+  // Nothing read yet — there is no signal to personalise on, so the plain chart is the honest
+  // answer rather than an empty screen pretending to be tailored.
+  if (!libraryVideoIds.length) return unpaged(fetchTrending(regionCode));
+
+  // One call gives channel AND category for every library video (1 unit, up to 50 ids).
+  const seedUrl = new URL(`${API}/videos`);
+  seedUrl.search = new URLSearchParams({
+    key: key(),
+    part: "snippet",
+    id: libraryVideoIds.slice(0, 50).join(","),
+  }).toString();
+  const seedRes = await fetch(seedUrl, { next: { revalidate: 900 } });
+  if (!seedRes.ok) return unpaged(fetchTrending(regionCode));
+  const seed = (await seedRes.json()) as {
+    items?: { snippet?: { channelId?: string; categoryId?: string } }[];
+  };
+
+  const channels = byFrequency((seed.items ?? []).map((i) => i.snippet?.channelId ?? ""));
+  const categories = byFrequency((seed.items ?? []).map((i) => i.snippet?.categoryId ?? ""));
+  if (!channels.length) return unpaged(fetchTrending(regionCode));
+
+  const seen = new Set(libraryVideoIds);
+  const fromChannels: SearchResult[][] = [];
+  const fromCategory: SearchResult[] = [];
+
+  // --- signal 1: recent uploads from the channels they read ---
+  const topChannels = channels.slice(0, MAX_SEED_CHANNELS);
+  const chUrl = new URL(`${API}/channels`);
+  chUrl.search = new URLSearchParams({
+    key: key(),
+    part: "contentDetails",
+    id: topChannels.join(","), // batched — still 1 unit however many channels
+  }).toString();
+  const chRes = await fetch(chUrl, { next: { revalidate: 3600 } });
+  if (chRes.ok) {
+    const ch = (await chRes.json()) as {
+      items?: { contentDetails?: { relatedPlaylists?: { uploads?: string } } }[];
+    };
+    const uploads = (ch.items ?? [])
+      .map((c) => c.contentDetails?.relatedPlaylists?.uploads)
+      .filter((p): p is string => !!p);
+
+    const pages = await Promise.all(
+      uploads.map(async (playlistId) => {
+        const plUrl = new URL(`${API}/playlistItems`);
+        plUrl.search = new URLSearchParams({
+          key: key(),
+          part: "contentDetails",
+          playlistId,
+          maxResults: String(UPLOADS_PER_CHANNEL),
+        }).toString();
+        const r = await fetch(plUrl, { next: { revalidate: 3600 } });
+        if (!r.ok) return [];
+        const d = (await r.json()) as { items?: { contentDetails?: { videoId?: string } }[] };
+        return (d.items ?? [])
+          .map((i) => i.contentDetails?.videoId)
+          .filter((v): v is string => !!v && !seen.has(v));
+      }),
+    );
+    // Hydrate every channel's candidates in ONE call rather than one per channel.
+    const hydrated = await hydrateVideos(pages.flat());
+    const byId = new Map(hydrated.map((r) => [r.video_id, r]));
+    for (const ids of pages) {
+      const group = ids.map((id) => byId.get(id)).filter((r): r is SearchResult => !!r);
+      if (group.length) fromChannels.push(group);
+    }
+  }
+
+  // --- signal 2: what's trending in the category they read most ---
+  if (categories.length) {
+    const catUrl = new URL(`${API}/videos`);
+    catUrl.search = new URLSearchParams({
+      key: key(),
+      part: "snippet,contentDetails",
+      chart: "mostPopular",
+      regionCode,
+      videoCategoryId: categories[0],
+      maxResults: "24",
+    }).toString();
+    const catRes = await fetch(catUrl, { next: { revalidate: 900 } });
+    if (catRes.ok) {
+      const d = (await catRes.json()) as { items?: VideoItem[] };
+      fromCategory.push(...toFeedResults(d.items ?? []));
+    }
+  }
+
+  // Interleave one video per channel per round, so the feed opens with breadth instead of ten
+  // videos from whichever channel happened to rank first.
+  const results: SearchResult[] = [];
+  const push = (r: SearchResult) => {
+    if (seen.has(r.video_id)) return;
+    seen.add(r.video_id);
+    results.push(r);
+  };
+  for (let round = 0; round < UPLOADS_PER_CHANNEL; round++) {
+    for (const group of fromChannels) if (group[round]) push(group[round]);
+  }
+  for (const r of fromCategory) push(r);
+
+  // Every signal came back empty (brand-new channels, quota trouble) — never show a blank feed.
+  if (!results.length) return unpaged(fetchTrending(regionCode));
+  // No paging: this is a computed blend, not a chart with stable cursors. The list is long enough
+  // to scroll, and the client stops asking for more when nextPageToken is null.
+  return { results, nextPageToken: null, source: "recommended" };
 }
 
 /**

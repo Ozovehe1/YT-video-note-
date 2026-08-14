@@ -42,6 +42,12 @@ class VerbatimRepository private constructor(context: Context) {
      */
     suspend fun trending(pageToken: String? = null) = api.trending(deviceRegion(), pageToken)
 
+    /**
+     * The browse feed, personalised from this user's library. The server decides how — and falls
+     * back to trending on its own — so callers treat this as "the feed" and nothing more.
+     */
+    suspend fun recommendations() = api.recommendations(deviceRegion())
+
     private fun deviceRegion(): String? {
         val locales = appContext.resources.configuration.locales
         val country = if (locales.isEmpty) null else locales[0].country
