@@ -46,13 +46,66 @@ const clock = (seconds: number) => formatDuration(Math.max(0, Math.floor(seconds
  * and our paragraph is the ASR segment, since each one is a distinct utterance with its own start
  * time. So a monologue may cut at any segment, which is TextTiling as published.
  */
-function cutPoints(segments: AsrSegment[]): number[] {
-  const turns: number[] = [];
+function turnStarts(segments: AsrSegment[]): number[] {
+  const out: number[] = [];
   for (let i = 0; i < segments.length; i++) {
-    if (i === 0 || segments[i].speaker !== segments[i - 1].speaker) turns.push(i);
+    if (i === 0 || segments[i].speaker !== segments[i - 1].speaker) out.push(i);
   }
-  if (turns.length > 1) return turns;
-  return segments.map((_, i) => i); // single voice → every paragraph is a legal break
+  return out;
+}
+
+/**
+ * Where this subheading's cut actually lands.
+ *
+ * Preference is always the nearest speaker-turn start, because that is what keeps an exchange
+ * between two people whole. But a turn is not always available: a lecture has one turn for its
+ * entire hour, and a lecture with a short Q&A has two. Insisting on turn starts there meant several
+ * subheadings snapped onto the same one and collapsed — measured at 6 subheadings producing 2
+ * sections, one of them 65 minutes long, under a title belonging to a different part of the talk.
+ *
+ * So when the preferred turn is already spoken for, the cut falls back to the nearest PARAGRAPH
+ * start after it — the unit TextTiling uses in the first place, the speaker turn being the dialogue
+ * substitute we prefer when there are turns to prefer. This costs nothing in speaker integrity:
+ * splitting one person's long uninterrupted stretch leaves the same voice either side of the
+ * heading, which is exactly what a monologue does. Only a cut that lands mid-exchange would break
+ * the promise, and one never can — a turn start is always preferred where one is free.
+ */
+function resolveCut(
+  segments: AsrSegment[],
+  turnSet: Set<number>,
+  wantedSeconds: number,
+  after: number,
+  limitSeconds: number,
+): number | null {
+  let bestTurn: number | null = null;
+  let bestTurnGap = Infinity;
+  let bestAny: number | null = null;
+  let bestAnyGap = Infinity;
+
+  for (let i = after + 1; i < segments.length; i++) {
+    // A cut may not wander into the NEXT subheading's half of the gap. Without a bound the "prefer
+    // a turn" rule reached for a turn start 27 minutes away in a lecture that had only two turns,
+    // placing a subheading asked for at 38:20 at 1:05:00 and squeezing the rest into 12-second
+    // slivers. Bounding at the next subheading's time alone was not enough — a turn sitting exactly
+    // there was still eligible, and still 800 seconds adrift. The MIDPOINT between the two requested
+    // times is the honest limit: past it, the other subheading is the closer owner of that moment.
+    // It comes from the model's own answer, so no threshold is invented here.
+    if (segments[i].start > limitSeconds && bestAny !== null) break;
+    const gap = Math.abs(segments[i].start - wantedSeconds);
+    if (gap < bestAnyGap) {
+      bestAny = i;
+      bestAnyGap = gap;
+    }
+    if (turnSet.has(i) && gap < bestTurnGap) {
+      bestTurn = i;
+      bestTurnGap = gap;
+    }
+  }
+
+  // A turn start wins when one is available in this stretch — that is what keeps an exchange whole.
+  // Otherwise the nearest paragraph, which is TextTiling's own unit and leaves the same voice either
+  // side of the heading.
+  return bestTurn ?? bestAny;
 }
 
 /**
@@ -66,34 +119,31 @@ export function buildSubheadedSections(
 ): BuiltSection[] | null {
   if (!segments.length || !subheadings.length) return null;
 
-  const turns = cutPoints(segments);
-  if (!turns.length) return null;
+  const turnSet = new Set(turnStarts(segments));
+  if (!turnSet.size) return null;
 
-  // Snap each subheading to the nearest turn start. Nearest, unconditionally — a proposed time
-  // either points at a turn or it doesn't, and there is no distance at which it stops pointing.
-  const cuts = subheadings.map((subheading) => {
-    let best = turns[0];
-    let bestGap = Infinity;
-    for (const index of turns) {
-      const gap = Math.abs(segments[index].start - subheading.startSeconds);
-      if (gap < bestGap) {
-        best = index;
-        bestGap = gap;
-      }
+  // Place each subheading in the order the model proposed them, nearest to the time it asked for —
+  // preferring a speaker-turn start, falling back to a paragraph start when that turn is taken.
+  // Nearest, unconditionally: a proposed time either points at a break or it doesn't, and there is
+  // no distance at which it stops pointing.
+  //
+  // The note always opens with its first subheading, whatever time was proposed for it.
+  const kept: { index: number; title: string }[] = [];
+  const ordered = [...subheadings].sort((a, b) => a.startSeconds - b.startSeconds);
+  for (let k = 0; k < ordered.length; k++) {
+    const subheading = ordered[k];
+    if (!kept.length) {
+      kept.push({ index: 0, title: subheading.title });
+      continue;
     }
-    return { index: best, title: subheading.title };
-  });
-
-  cuts.sort((a, b) => a.index - b.index);
-  cuts[0].index = 0; // the note always opens with its first subheading, whatever time was proposed
-
-  // The only filter: two subheadings that snapped onto the same turn become one section. Nothing
-  // is dropped for being short — the model decided how many sections this note needs.
-  const kept: typeof cuts = [];
-  for (const cut of cuts) {
-    const previous = kept[kept.length - 1];
-    if (previous && cut.index <= previous.index) continue;
-    kept.push(cut);
+    const after = kept[kept.length - 1].index;
+    const next = ordered[k + 1]?.startSeconds;
+    const limit = next === undefined ? Infinity : (subheading.startSeconds + next) / 2;
+    const index = resolveCut(segments, turnSet, subheading.startSeconds, after, limit);
+    // Only when the note has genuinely run out of paragraphs to give — the model asked for more
+    // sections than there is transcript. Nothing is dropped for being short.
+    if (index === null) break;
+    kept.push({ index, title: subheading.title });
   }
 
   const lastStart = segments[segments.length - 1].start;
