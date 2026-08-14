@@ -154,10 +154,22 @@ session and must bypass RLS — they're authenticated by the agent token and an 
 
 ### 3. Deploy the Modal ASR service
 
-Open [`agent/modal_asr.py`](agent/modal_asr.py) in a Modal Notebook and run it (it calls `app.deploy()`
-itself). Create one Modal **secret** named `tailscale` holding `ASR_WEBHOOK_SECRET` (the same value you
-put in the app env below). The deployed endpoint URL —
+Paste [`agent/modal_asr.py`](agent/modal_asr.py) into a Modal Notebook cell and run it — its last line
+calls `app.deploy()`. Create one Modal **secret** named `tailscale` holding `ASR_WEBHOOK_SECRET` (the
+same value you put in the app env below). The deployed endpoint URL —
 `https://<workspace>--verbatim-asr-transcribe.modal.run` — is stable; use it as `MODAL_TRANSCRIBE_URL`.
+Re-running is idempotent: it updates the deployment in place and the URL doesn't change.
+
+> That file is deliberately kept **comment-free and under ~350 lines**, because notebook cells
+> truncate a long paste (ours died at ~18.5 KB, mid-docstring, with `SyntaxError: incomplete input`).
+> It is generated from the annotated original by Python's own parser and verified to produce an
+> identical AST, so it is the same program. The fully commented version — with the reasoning and the
+> research behind the clustering constraints — is in git history at `0429c4f`. **Keep new comments
+> out of it**; put explanation in the commit message instead, or the paste breaks again.
+>
+> `app.deploy()` is called unconditionally rather than under `if __name__ == "__main__":`, because
+> not every notebook sets `__name__` to `"__main__"` — where it doesn't, the guarded version runs
+> clean and deploys nothing. The cost is that merely *importing* this module deploys, so don't.
 
 ### 4. Configure the Vercel app env
 
