@@ -34,13 +34,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +54,7 @@ import com.verbatim.helper.data.model.SearchResult
 import com.verbatim.helper.ui.components.EmptyState
 import com.verbatim.helper.ui.components.FeedSkeleton
 import com.verbatim.helper.ui.components.PrimaryButton
+import com.verbatim.helper.ui.components.PullToRefresh
 import com.verbatim.helper.ui.components.SecondaryButton
 import com.verbatim.helper.ui.components.TopBar
 import com.verbatim.helper.ui.theme.Shape
@@ -86,16 +84,16 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     var searched by mutableStateOf(false)
         private set
 
-    // ---- browse feed (trending), shown whenever the search box is empty ----
+    // ---- browse feed, shown whenever the search box is empty ----
     var feed by mutableStateOf<List<SearchResult>>(emptyList())
         private set
     var feedLoading by mutableStateOf(false)
         private set
+    /** Distinct from feedLoading: drives the pull-to-refresh spinner, not the first-load skeleton. */
+    var feedRefreshing by mutableStateOf(false)
+        private set
     var feedError by mutableStateOf<String?>(null)
         private set
-    private var feedToken: String? = null
-    /** Set when the chart runs out of pages, so the list stops asking for more. */
-    private var feedExhausted = false
     private var feedJob: Job? = null
 
     /**
@@ -122,24 +120,25 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * First page of the feed. Cheap enough to do on open: the server's chart call is 1 quota unit
-     * and is cached for 15 minutes, so re-entering this screen usually spends nothing at all.
+     * Load the feed. Arrives complete — the server returns a whole blend rather than a page — so
+     * this REPLACES the list instead of appending to it.
+     *
+     * Pulling to refresh genuinely re-rolls the feed: the server samples its selection at random
+     * from pools it has already cached, so a refresh shows different videos without spending any
+     * extra YouTube quota. Re-entering the screen is equally cheap for the same reason.
      */
-    fun loadFeed(reset: Boolean = false) {
+    fun loadFeed(refresh: Boolean = false) {
         if (feedLoading) return
-        if (reset) { feedToken = null; feedExhausted = false; feed = emptyList() }
-        if (feedExhausted) return
         feedJob?.cancel()
         feedJob = viewModelScope.launch {
-            feedLoading = true; feedError = null
+            feedLoading = true
+            if (refresh) feedRefreshing = true
+            feedError = null
             try {
                 val page = repo.recommendations()
-                // YouTube can repeat a video across page boundaries, and a duplicate id would
-                // crash LazyColumn's `key`. Dedupe on append rather than trusting the API.
-                val seen = feed.mapTo(HashSet()) { it.videoId }
-                feed = feed + page.results.filter { seen.add(it.videoId) }
-                feedToken = page.nextPageToken
-                feedExhausted = page.nextPageToken == null || page.results.isEmpty()
+                // LazyColumn's `key` must be unique or it crashes, so never trust the API not to
+                // repeat an id.
+                feed = page.results.distinctBy { it.videoId }
                 // Say what the list actually is. Calling generic trending "For you" is a small lie
                 // the user catches the first time the personalisation quietly fails.
                 feedTitle = when (page.source) {
@@ -150,18 +149,13 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Only an empty feed is worth an error screen; a failed *next* page just stops
-                // paging, because the user still has everything above it to read.
+                // Keep whatever is already on screen if a refresh fails — losing a feed the user was
+                // reading, to show an error about the refresh, is a worse outcome than a stale list.
                 if (feed.isEmpty()) feedError = "Couldn't load videos — check your connection."
-                feedExhausted = true
             }
             feedLoading = false
+            feedRefreshing = false
         }
-    }
-
-    /** Called when the feed is scrolled near its end. */
-    fun loadMoreFeed() {
-        if (!feedLoading && !feedExhausted && feed.isNotEmpty()) loadFeed()
     }
 
     /**
@@ -338,9 +332,13 @@ fun NewNoteScreen(onBack: () -> Unit, onCreated: (String) -> Unit, vm: NewNoteVi
  * The scrolling browse feed shown before anyone types — this screen used to open on a search box
  * above a page of nothing, which asks the user to already know what they want.
  *
- * These are YouTube's trending videos, and they are laid out the way a video feed is: one wide
- * card per row rather than the compact rows search uses. Videos too long for the pipeline and
- * live broadcasts are filtered out server-side, so everything here can actually become a note.
+ * Videos are drawn from the channels and topics in the user's own library, laid out the way a video
+ * feed is: one wide card per row rather than the compact rows search uses. Shorts, clips, live
+ * broadcasts and anything the pipeline couldn't finish are filtered out server-side, so everything
+ * here can actually become a note.
+ *
+ * There is no infinite scroll: the server returns a complete blend rather than a page. Pulling down
+ * re-rolls it, which is the gesture that replaces "load more" here.
  */
 @Composable
 private fun BrowseFeed(
@@ -349,19 +347,6 @@ private fun BrowseFeed(
     onPick: (SearchResult) -> Unit,
 ) {
     val colors = VerbatimTheme.colors
-
-    // Ask for the next page a few cards before the bottom, so the list is already longer by the
-    // time the user gets there and the scroll never visibly stops.
-    val nearEnd by remember(state) {
-        derivedStateOf {
-            val last = state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val total = state.layoutInfo.totalItemsCount
-            total > 0 && last >= total - 3
-        }
-    }
-    LaunchedEffect(state) {
-        snapshotFlow { nearEnd }.collect { if (it) vm.loadMoreFeed() }
-    }
 
     when {
         vm.feed.isEmpty() && vm.feedLoading -> FeedSkeleton()
@@ -377,7 +362,7 @@ private fun BrowseFeed(
             )
             // The feed failing must not take the search box down with it, so this offers the
             // retry and says the box above still works.
-            SecondaryButton(text = "Try again", onClick = { vm.loadFeed(reset = true) })
+            SecondaryButton(text = "Try again", onClick = { vm.loadFeed(refresh = true) })
             Spacer(Modifier.height(Space.md))
             Text(
                 "You can still search, or paste a link.",
@@ -391,25 +376,23 @@ private fun BrowseFeed(
             subtitle = "Search by title — or paste a YouTube link and we'll take it from there.",
         )
 
-        else -> LazyColumn(
-            state = state,
-            contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
-            verticalArrangement = Arrangement.spacedBy(Space.xl),
-        ) {
-            // Header inside the list, so it scrolls away with the content instead of taking
-            // permanent height on a screen whose whole job is browsing.
-            vm.feedTitle?.let { title ->
-                item(key = "feed-header") {
-                    Text(title, style = VerbatimText.cardTitle, color = colors.ink)
-                }
-            }
-            items(vm.feed, key = { it.videoId }) { r -> FeedCard(r) { onPick(r) } }
-            if (vm.feedLoading) {
-                item {
-                    Box(Modifier.fillMaxWidth().padding(Space.lg), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = colors.oxblood, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+        // Pull down to re-roll the feed. Same component the library uses, so the gesture feels
+        // identical across the app — and it costs no YouTube quota, because the server samples a
+        // fresh selection out of pools it has already cached.
+        else -> PullToRefresh(refreshing = vm.feedRefreshing, onRefresh = { vm.loadFeed(refresh = true) }) {
+            LazyColumn(
+                state = state,
+                contentPadding = PaddingValues(horizontal = Space.gutter, vertical = Space.sm),
+                verticalArrangement = Arrangement.spacedBy(Space.xl),
+            ) {
+                // Header inside the list, so it scrolls away with the content instead of taking
+                // permanent height on a screen whose whole job is browsing.
+                vm.feedTitle?.let { title ->
+                    item(key = "feed-header") {
+                        Text(title, style = VerbatimText.cardTitle, color = colors.ink)
                     }
                 }
+                items(vm.feed, key = { it.videoId }) { r -> FeedCard(r) { onPick(r) } }
             }
         }
     }

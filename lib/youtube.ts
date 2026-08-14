@@ -35,6 +35,16 @@ const UPLOADS_SCANNED_PER_CHANNEL = 30;
  */
 const CHART_FETCH_SIZE = 50;
 
+/**
+ * How many of the most-read channels the seed selection may draw from.
+ *
+ * Larger than MAX_SEED_CHANNELS on purpose: taking the top 6 every time made the feed identical on
+ * every open, and left the 7th-favourite channel permanently invisible. Sampling 6 out of 12 lets
+ * refreshes surface different corners of a broad library while still only ever using channels the
+ * user demonstrably reads. Costs nothing — only the chosen 6 are fetched.
+ */
+const CHANNEL_POOL = 12;
+
 function key(): string {
   const k = process.env.YOUTUBE_API_KEY;
   if (!k) throw new Error("YOUTUBE_API_KEY is not set.");
@@ -194,6 +204,23 @@ async function unpaged(
   return { results: (await p).results, nextPageToken: null, source: "trending" };
 }
 
+/**
+ * Fisher-Yates, on a copy.
+ *
+ * The feed is shuffled at SELECTION time, never at fetch time. Every YouTube call stays cached
+ * (15–60 min), so pulling to refresh re-draws from the same cached pool and produces a genuinely
+ * different feed for **zero extra quota**. Randomising the requests instead would have busted the
+ * cache and spent ~10 units on every pull.
+ */
+function shuffled<T>(items: readonly T[]): T[] {
+  const a = [...items];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 /** Most frequent values first — how we rank the channels and categories a library implies. */
 function byFrequency(values: string[]): string[] {
   const counts = new Map<string, number>();
@@ -257,7 +284,9 @@ export async function fetchRecommendations(
   const fromCategory: SearchResult[] = [];
 
   // --- signal 1: recent uploads from the channels they read ---
-  const topChannels = channels.slice(0, MAX_SEED_CHANNELS);
+  // Draw the seed channels from a POOL of the most-read ones rather than always the same top few,
+  // so someone with a broad library sees different corners of it on different refreshes.
+  const topChannels = shuffled(channels.slice(0, CHANNEL_POOL)).slice(0, MAX_SEED_CHANNELS);
   const chUrl = new URL(`${API}/channels`);
   chUrl.search = new URLSearchParams({
     key: key(),
@@ -294,12 +323,13 @@ export async function fetchRecommendations(
     const hydrated = await hydrateVideos(pages.flat());
     const byId = new Map(hydrated.map((r) => [r.video_id, r]));
     for (const ids of pages) {
-      // Take the long-form survivors, newest first, capped so one prolific channel can't own the
-      // feed. The scan was wide (UPLOADS_SCANNED_PER_CHANNEL); this is where it narrows again.
-      const group = ids
-        .map((id) => byId.get(id))
-        .filter((r): r is SearchResult => !!r)
-        .slice(0, UPLOADS_PER_CHANNEL);
+      // Pick at random from this channel's long-form back catalogue rather than always its newest
+      // few, capped so one prolific channel can't own the feed. Newest-first was what made the feed
+      // identical on every open: the scan is wide (UPLOADS_SCANNED_PER_CHANNEL) and already cached,
+      // so sampling it is where the variety comes from, free.
+      const group = shuffled(
+        ids.map((id) => byId.get(id)).filter((r): r is SearchResult => !!r),
+      ).slice(0, UPLOADS_PER_CHANNEL);
       if (group.length) fromChannels.push(group);
     }
   }
@@ -318,7 +348,8 @@ export async function fetchRecommendations(
     const catRes = await fetch(catUrl, { next: { revalidate: 900 } });
     if (catRes.ok) {
       const d = (await catRes.json()) as { items?: VideoItem[] };
-      fromCategory.push(...toFeedResults(d.items ?? []));
+      // Shuffled for the same reason: the chart barely moves within its 15-minute cache window.
+      fromCategory.push(...shuffled(toFeedResults(d.items ?? [])));
     }
   }
 
@@ -330,8 +361,9 @@ export async function fetchRecommendations(
     seen.add(r.video_id);
     results.push(r);
   };
+  const order = shuffled(fromChannels);
   for (let round = 0; round < UPLOADS_PER_CHANNEL; round++) {
-    for (const group of fromChannels) if (group[round]) push(group[round]);
+    for (const group of order) if (group[round]) push(group[round]);
   }
   for (const r of fromCategory) push(r);
 
