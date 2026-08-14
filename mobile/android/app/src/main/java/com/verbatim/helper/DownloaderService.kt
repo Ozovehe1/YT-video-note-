@@ -218,12 +218,17 @@ class DownloaderService : Service() {
         try {
             setStatus("Downloading “$title” 0%")
             val audio = downloadAudio(videoUrl, workDir, title, noteId)
-            // Supabase's free tier rejects uploads over 50 MB. Compressed 16 kHz mono audio only
-            // crosses that around ~4.5 h of speech; if it still does, fail clearly instead of
-            // uploading a doomed file and looping.
-            if (audio.length() > 49L * 1024 * 1024) {
+            // Backstop for the duration refusal in /api/notes: a note created before that check
+            // existed, or one whose metadata carried no duration, can still arrive here too long.
+            // Derived from the same MAX_AUDIO_HOURS so the two can't drift apart — never a bare
+            // byte literal, which is what let the README claim 5 h while the code cut off at 3.4.
+            val capMb = (MAX_AUDIO_HOURS * OUTPUT_MB_PER_HOUR).toLong()
+            if (audio.length() > capMb * 1024 * 1024) {
                 val mb = audio.length() / (1024 * 1024)
-                throw IllegalStateException("Audio is ${mb}MB after compression — too long for the 50 MB storage limit")
+                throw IllegalStateException(
+                    "This recording is too long — its audio is ${mb}MB compressed and the limit is " +
+                        "about ${MAX_AUDIO_HOURS} hours. Nothing is wrong with the video.",
+                )
             }
             setStatus("Uploading: $title (${audio.length() / 1024} KB)")
             upload(uploadUrl, audio)
@@ -293,12 +298,18 @@ class DownloaderService : Service() {
     ): File = coroutineScope {
         dir.apply { deleteRecursively(); mkdirs() }
         val request = YoutubeDLRequest(videoUrl)
-        // Audio-only, explicitly, before any fallback that could pull video. `bestaudio/best` lets
-        // yt-dlp drop to a COMBINED video+audio stream whenever the chosen player client exposes no
-        // audio-only format — and for a 98-minute lecture that stream is hundreds of MB, which both
-        // trips --max-filesize (a silent skip, exit 0, no file) and would burn the mobile data this
-        // design exists to save. Ordering m4a first also avoids a needless re-encode.
-        request.addOption("-f", "bestaudio[ext=m4a]/bestaudio/worstvideo+bestaudio/best")
+        // AUDIO ONLY, with no fallback that can reach a video stream.
+        //
+        // This used to end `/worstvideo+bestaudio/best`, and those two options can select a combined
+        // video+audio stream — hundreds of megabytes for a long lecture. That is the only reason
+        // --max-filesize was set as low as it was: a guard against a fallback we had added
+        // ourselves. And when it fired, yt-dlp exited 0 having written nothing, which is the least
+        // legible failure in the pipeline.
+        //
+        // With the fallback gone, a video whose audio-only formats are unavailable now fails with
+        // yt-dlp's own "Requested format is not available" — which names the problem — instead of
+        // quietly fetching video and dying on a byte count. Ordering m4a first avoids a re-encode.
+        request.addOption("-f", "bestaudio[ext=m4a]/bestaudio")
         // Pick the SMALLEST audio stream YouTube offers (~48 kbps) instead of the default best
         // (~130 kbps). Speech ASR at 16 kHz mono needs nothing more, so this cuts the download by
         // ~2-3× (a 1.5 h podcast: ~32 MB vs ~88 MB) — the main mobile-data saver. `--max-filesize`
@@ -592,7 +603,30 @@ class DownloaderService : Service() {
         )
 
         /** Runaway guard on the source stream, before transcoding. */
-        private const val MAX_SOURCE_SIZE = "150M"
+        /**
+         * The longest recording this pipeline accepts, and the single place that ceiling lives.
+         *
+         * The transcode pins the OUTPUT at 32 kbps mono (~14.1 MB/hour) regardless of what YouTube
+         * served, so the real constraint is duration, not bytes. Supabase's free plan rejects
+         * uploads over 50 MB, which lands at about 3.4 hours — so that is the honest limit, and
+         * /api/notes refuses a longer video at creation rather than letting the phone spend the data
+         * and fail at the end.
+         */
+        const val MAX_AUDIO_HOURS = 3.4
+        /** 32 kbps mono, the rate --audio-quality pins the transcode to. */
+        private const val OUTPUT_MB_PER_HOUR = 14.1
+
+        /**
+         * Runaway guard on the SOURCE download — deliberately no longer the binding constraint.
+         *
+         * At 150M it bound on ordinary audio: three hours of YouTube's default 130 kbps m4a is
+         * 171 MB, so a perfectly acceptable video failed on a byte cap that had nothing to do with
+         * the real ceiling, and which of the two applied depended on the bitrate YouTube happened to
+         * serve. 200M clears MAX_AUDIO_HOURS even at that bitrate, so the duration check decides and
+         * this only ever catches something pathological. Safe to raise only because the format
+         * selector above can no longer reach a video stream.
+         */
+        private const val MAX_SOURCE_SIZE = "200M"
         /** Cap on the pre-flight yt-dlp update so a stalled fetch can't hold up polling. */
         private const val UPDATE_TIMEOUT_MS = 120_000L
         /** How often the stall watchdog checks for progress. */

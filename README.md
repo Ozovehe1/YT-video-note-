@@ -147,6 +147,8 @@ Create a project, then in the **SQL Editor** run the migrations in order:
 - [`supabase/migrations/0005_pipeline_state.sql`](supabase/migrations/0005_pipeline_state.sql) — the
   ASR retry counter (previously smuggled through the user-facing `error_message`) and the claim
   timestamp that lets a note stranded by a killed phone be requeued instead of stalling forever.
+- [`supabase/migrations/0006_audio_size_limit.sql`](supabase/migrations/0006_audio_size_limit.sql) —
+  states the audio bucket's file-size limit explicitly rather than inheriting the project default.
 
 Two keys are used: the **publishable (anon)** key for the app + browser (RLS enforces access), and the
 **service-role** key server-side for the agent endpoints and the Modal callback (which have no user
@@ -264,8 +266,13 @@ supabase/migrations/             0001_init, 0002_agent, 0003_storage, 0004_audio
   **"Waiting for your phone"** until it is — nothing is lost. The downloader restarts itself after a
   reboot or an app update, and a note whose download was cut short (app killed mid-job) is returned
   to the queue after 90 minutes rather than sitting in "Transcribing" forever.
-- **Very long videos** upload a compressed audio file to Supabase Storage (16 kHz mono AAC, ~14 MB/hour
-  — a 5 h talk ≈ 70 MB); raise the Storage global file-size limit only if a very long upload is rejected.
+- **Recordings are capped at about 3.4 hours.** The audio is compressed to 16 kHz mono AAC at
+  32 kbps (~14 MB/hour), and Supabase's free plan rejects uploads over 50 MB — which is where 3.4 h
+  lands. A longer video is refused **when you create the note**, naming its duration, so the phone
+  never spends mobile data on something that cannot finish. (This paragraph used to claim a 5 h talk
+  worked and advised raising the Storage limit; a 5 h talk is ~70 MB and the code rejects it, so that
+  advice changed nothing.) To lift the ceiling, raise `MAX_AUDIO_HOURS` in `app/api/notes/route.ts`
+  and `DownloaderService.kt` together with the bucket limit in `supabase/migrations/0006_*.sql`.
 - **Android only.** iOS can't run yt-dlp and the App Store bans YouTube downloaders.
 - Free tiers are sized for limited users: Supabase (500 MB DB + 1 GB storage), YouTube API daily quota,
   Vercel Hobby, and Modal's monthly GPU credits.

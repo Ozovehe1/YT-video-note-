@@ -8,6 +8,13 @@ import { findReusableAudio, kickModalAsr, originFrom } from "@/lib/asr-kickoff";
 export const maxDuration = 60;
 
 /**
+ * The longest recording the pipeline accepts. Mirrors DownloaderService.MAX_AUDIO_HOURS — the phone
+ * enforces the same ceiling as a backstop for a note created before this check existed, but the
+ * refusal belongs HERE, where no data has been spent yet.
+ */
+const MAX_AUDIO_HOURS = 3.4;
+
+/**
  * Create a note. The audio is fetched on the user's phone (residential IP) and transcribed on
  * Modal, so here we only resolve the video's metadata and queue the note as `awaiting_audio`. The
  * phone claims it, uploads the audio, and Modal posts the diarized transcript back to
@@ -42,6 +49,26 @@ export async function POST(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not load video details.";
     return NextResponse.json({ error: message }, { status: 502 });
+  }
+
+  // Refuse a recording longer than the pipeline can carry, BEFORE anything is downloaded.
+  //
+  // The transcode pins the audio at 32 kbps mono, so the file the phone must upload is
+  // ~14.1 MB per hour whatever YouTube served, and Supabase's free plan rejects uploads over
+  // 50 MB. Without this check the phone downloaded the whole video on mobile data, transcoded
+  // it, and only then hit the size wall — the user paying for the data twice over to be told no.
+  // The duration is already in hand here, from the same metadata call.
+  if (meta.duration_seconds && meta.duration_seconds > MAX_AUDIO_HOURS * 3600) {
+    const hrs = Math.floor(meta.duration_seconds / 3600);
+    const mins = Math.round((meta.duration_seconds % 3600) / 60);
+    return NextResponse.json(
+      {
+        error:
+          `This video is ${hrs}h ${mins}m. Verbatim can handle about ${MAX_AUDIO_HOURS} hours — ` +
+          `past that the compressed audio no longer fits the storage limit.`,
+      },
+      { status: 422 },
+    );
   }
 
   const { data: note, error } = await supabase
