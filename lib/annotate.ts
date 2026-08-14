@@ -22,9 +22,25 @@ import type { MergeHint, SpeakerHint } from "@/lib/speakers";
  * null, and the note completes on fixed time windows with anonymous speakers, exactly as before.
  */
 
-// Newest model on Groq's free tier (Apache 2.0, April 2026): 30 req/min, 1000 req/day, 8000 tok/min.
-const MODEL = "qwen/qwen3.6-27b";
+// Overridable without a code change: Groq's free-tier line-up moves, and a model id that has been
+// retired makes every request 404 — which used to surface only as "the note has no subheadings".
+// Set GROQ_MODEL in the environment to switch. Check https://console.groq.com/docs/models for what
+// your account can actually call.
+const MODEL = process.env.GROQ_MODEL || "qwen/qwen3.6-27b";
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
+
+/**
+ * Why an annotation attempt produced nothing.
+ *
+ * Every failure here degrades to fixed time windows, which is the right behaviour but is
+ * indistinguishable from success-with-nothing-to-say when you're looking at a finished note. So each
+ * one is named and logged: a note that came out as 5-minute blocks should never leave you guessing
+ * whether the key is missing, the model id is wrong, or the reply was malformed.
+ */
+function give(reason: string, detail?: unknown): null {
+  console.warn(`[verbatim] annotation skipped — ${reason}`, detail ?? "");
+  return null;
+}
 
 /** Resolution of the digest sent to the model — one line per this many seconds of speech. */
 const DIGEST_SECONDS = 30;
@@ -173,10 +189,13 @@ export async function requestAnnotation(
   video: { title?: string; channel?: string },
 ): Promise<Annotation | null> {
   const key = process.env.GROQ_API_KEY;
-  if (!key || segments.length === 0) return null;
+  if (!key) return give("GROQ_API_KEY is not set");
+  if (segments.length === 0) return give("no segments");
 
   const span = segments[segments.length - 1].start - segments[0].start;
-  if (span < MIN_OUTLINE_SECONDS) return null;
+  if (span < MIN_OUTLINE_SECONDS) {
+    return give(`recording is only ${Math.round(span)}s — too short to outline`);
+  }
 
   const header = [
     video.title ? `Video title: ${video.title}` : "",
@@ -189,37 +208,66 @@ export async function requestAnnotation(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: header + digest(segments) },
-        ],
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
+    const ask = (jsonMode: boolean) =>
+      fetch(ENDPOINT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: MODEL,
+          temperature: 0.2,
+          ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: header + digest(segments) },
+          ],
+        }),
+        signal: controller.signal,
+      });
+
+    let res = await ask(true);
+    if (res.status === 400) {
+      // Not every model on Groq accepts response_format — preview models in particular reject it
+      // with a 400 that is indistinguishable from a bad request. The prompt already demands JSON
+      // and the parser tolerates prose around it, so drop the flag and ask again rather than lose
+      // the whole annotation over an unsupported option.
+      const why = (await res.text().catch(() => "")).slice(0, 200);
+      console.warn(`[verbatim] ${MODEL} rejected JSON mode (${why}) — retrying without it`);
+      res = await ask(false);
+    }
+    if (!res.ok) {
+      // The body names the cause — an unknown model id, an invalid key, a rate limit. Without it a
+      // 401 and a 429 look identical from the outside.
+      return give(`Groq returned ${res.status}`, (await res.text().catch(() => "")).slice(0, 300));
+    }
 
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = body.choices?.[0]?.message?.content;
-    if (!content) return null;
+    if (!content) return give("Groq returned no message content");
 
-    const parsed = JSON.parse(content) as Record<string, unknown>;
+    // Without json_object mode the reply can carry prose or a ```json fence around the object, so
+    // parse the outermost {...} rather than assuming the whole string is JSON.
+    const raw = content.slice(content.indexOf("{"), content.lastIndexOf("}") + 1);
+    if (!raw) return give("reply contained no JSON object", content.slice(0, 300));
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     const subheadings = parseSubheadings(parsed.subheadings);
     const speakers = parseSpeakers(parsed.speakers);
     const merges = parseMerges(parsed.merges);
 
     // Speaker hints alone are still worth having (named speakers on time-windowed sections), so
     // this only gives up when the reply carried nothing usable at all.
-    if (!subheadings.length && !speakers.length) return null;
+    if (!subheadings.length && !speakers.length) {
+      return give("reply had no usable subheadings or speakers", content.slice(0, 300));
+    }
+    console.log(
+      `[verbatim] annotated with ${MODEL}: ${subheadings.length} subheading(s), ` +
+        `${speakers.length} speaker hint(s), ${merges.length} merge(s)`,
+    );
     return { subheadings, speakers, merges };
-  } catch {
-    return null;
+  } catch (e) {
+    return give(
+      e instanceof Error && e.name === "AbortError" ? `timed out after ${TIMEOUT_MS}ms` : "request failed",
+      e instanceof Error ? e.message : e,
+    );
   } finally {
     clearTimeout(timer);
   }

@@ -65,25 +65,66 @@ function normalizeText(value: string): string {
     .trim();
 }
 
+/** Levenshtein distance, capped in practice by the short strings we compare (single name words). */
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(
+        prev[j] + 1,
+        prev[j - 1] + 1,
+        diag + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+/**
+ * Do two name words refer to the same name?
+ *
+ * NOT string equality, because the two sources spell names differently on purpose. The video title
+ * carries the real spelling; the transcript carries whatever the ASR *heard*, and speech models
+ * transliterate names phonetically. A real note had the title say "Matthieu Wyart" while the
+ * transcript said "Matthew Wyatt" — the same person, zero words in common under exact matching, so
+ * an exact check throws the name away precisely when it is best evidenced.
+ *
+ * SIMILARITY is deliberately tight (one edit per ~4 characters) and both words must start with the
+ * same letter, so "Matthew"/"Matthieu" and "Wyatt"/"Wyart" pass while genuinely different names
+ * don't. Short words must match exactly — at three letters, one edit is a different word.
+ */
+const SIMILARITY = 0.75;
+
+function sameName(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  if (a[0] !== b[0]) return false;
+  const longest = Math.max(a.length, b.length);
+  return 1 - editDistance(a, b) / longest >= SIMILARITY;
+}
+
 /**
  * Is every word of `name` actually present in the source material?
  *
  * Word-by-word rather than whole-string, because a title says "Elon Musk" while the transcript says
- * "Elon" and the description says "Musk" — both halves are evidenced, just not adjacent. Each word
- * is matched on a word boundary so "Al" can't be satisfied by "also".
+ * "Elon" and the description says "Musk" — both halves are evidenced, just not adjacent.
  */
-function isNameEvidenced(name: string, haystack: string): boolean {
+function isNameEvidenced(name: string, haystackWords: Set<string>): boolean {
   const words = normalizeText(name).split(" ").filter(Boolean);
   if (!words.length || words.length > MAX_NAME_WORDS) return false;
   return words.every((word) => {
     if (word.length < 2) return false; // initials can't be verified either way
-    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(haystack);
+    for (const candidate of haystackWords) if (sameName(word, candidate)) return true;
+    return false;
   });
 }
 
 /** A proposed name must look like a name, not a description or a sentence. */
-function cleanName(raw: string | undefined, haystack: string): string | null {
+function cleanName(raw: string | undefined, haystack: Set<string>): string | null {
   if (!raw) return null;
   const name = raw.trim().replace(/\s+/g, " ");
   if (!name || name.length > MAX_LABEL_CHARS) return null;
@@ -177,8 +218,10 @@ export function resolveSpeakers(
   const resolveLabel = (label: string) => mergedInto.get(label) ?? label;
 
   // D3 — names, checked against what the video and the transcript actually contain.
-  const haystack = normalizeText(
-    [evidence.title ?? "", evidence.channel ?? "", ...segments.map((s) => s.text)].join(" "),
+  const haystack = new Set(
+    normalizeText([evidence.title ?? "", evidence.channel ?? "", ...segments.map((s) => s.text)].join(" "))
+      .split(" ")
+      .filter(Boolean),
   );
 
   const survivors = labels

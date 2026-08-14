@@ -41,6 +41,16 @@ export async function GET(request: Request) {
       SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
       YOUTUBE_API_KEY: Boolean(process.env.YOUTUBE_API_KEY),
       NEXT_PUBLIC_SUPABASE_URL: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
+      // Optional. Without it every note falls back to fixed ~5-minute sections and anonymous
+      // "Speaker N" labels — which looks exactly like the model having nothing to say, so its
+      // absence has to be visible somewhere.
+      GROQ_API_KEY: Boolean(process.env.GROQ_API_KEY),
+    },
+    // A wrong model id fails just as silently as a missing key: Groq answers 404 and the note
+    // falls back. Reported so it can be checked against console.groq.com/docs/models.
+    annotation: {
+      model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b (default)",
+      enabled: Boolean(process.env.GROQ_API_KEY),
     },
     migrations: await migrationState(),
     notes: { total: notes?.length ?? 0, byStatus },
