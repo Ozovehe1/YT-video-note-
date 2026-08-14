@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit
  * A page of the browse feed. [source] is "recommended" when the server built the list from this
  * user's library, or "trending" when there was nothing to personalise on — the screen labels the
  * list from it, so the two are never conflated. Null for plain search results.
+ * "none" means the account has read nothing yet and gets the search prompt, not a feed.
  */
 data class SearchPage(
     val results: List<SearchResult>,
@@ -60,9 +61,10 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
      * The browse feed, built from this user's own library — the channels they read and the
      * category they read most.
      *
-     * The server falls back to the plain trending chart whenever there is no signal to personalise
-     * on (a brand-new account) or a lookup fails, so this never returns an empty feed and the
-     * screen needs no separate "no recommendations" state.
+     * [SearchPage.source] says what came back: "recommended" for a real blend, "trending" when a
+     * library exists but no signal survived, and "none" for an account that has read nothing yet —
+     * which returns NO results on purpose, so the screen shows its search prompt rather than a
+     * feed of videos picked for nobody.
      */
     suspend fun recommendations(region: String?): SearchPage = withContext(Dispatchers.IO) {
         val token = tokenProvider() ?: throw IllegalStateException("Not signed in")

@@ -99,15 +99,13 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
     private var feedJob: Job? = null
 
     /**
-     * What the feed above the list should be called.
+     * What the list above the feed is called.
      *
      * Only the server knows whether it managed to personalise, so it says so and this reads it —
      * never inferred from "the library looks non-empty", which would eventually label the trending
      * fallback as someone's recommendations.
      */
     var feedTitle by mutableStateOf<String?>(null)
-        private set
-    var feedSubtitle by mutableStateOf<String?>(null)
         private set
 
     private var searchJob: Job? = null
@@ -142,14 +140,12 @@ class NewNoteViewModel(app: Application) : AndroidViewModel(app) {
                 feed = feed + page.results.filter { seen.add(it.videoId) }
                 feedToken = page.nextPageToken
                 feedExhausted = page.nextPageToken == null || page.results.isEmpty()
-                if (page.source == "recommended") {
-                    feedTitle = "For you"
-                    feedSubtitle = "Based on the channels and topics in your library"
-                } else {
-                    // Say what it is. Calling generic trending "recommended" is a small lie the
-                    // user can catch the first time they open a brand-new account.
-                    feedTitle = "Trending"
-                    feedSubtitle = "Make a few notes and this becomes recommendations"
+                // Say what the list actually is. Calling generic trending "For you" is a small lie
+                // the user catches the first time the personalisation quietly fails.
+                feedTitle = when (page.source) {
+                    "recommended" -> "For you"
+                    "trending" -> "Trending"
+                    else -> null // nothing read yet — no feed, and so no heading
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -404,13 +400,7 @@ private fun BrowseFeed(
             // permanent height on a screen whose whole job is browsing.
             vm.feedTitle?.let { title ->
                 item(key = "feed-header") {
-                    Column(Modifier.padding(bottom = Space.xs)) {
-                        Text(title, style = VerbatimText.cardTitle, color = colors.ink)
-                        vm.feedSubtitle?.let {
-                            Spacer(Modifier.height(2.dp))
-                            Text(it, style = VerbatimText.secondary, color = colors.muted)
-                        }
-                    }
+                    Text(title, style = VerbatimText.cardTitle, color = colors.ink)
                 }
             }
             items(vm.feed, key = { it.videoId }) { r -> FeedCard(r) { onPick(r) } }

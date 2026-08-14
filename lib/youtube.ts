@@ -135,7 +135,13 @@ async function hydrateVideos(ids: string[]): Promise<SearchResult[]> {
 export type FeedPage = {
   results: SearchResult[];
   nextPageToken: string | null;
-  source: "recommended" | "trending";
+  /**
+   * "recommended" — a blend built from this user's library.
+   * "trending"    — a library exists but no signal survived, so the chart stands in.
+   * "none"        — nothing read yet. The app shows its search prompt instead of a feed; a brand
+   *                 new user is not served a wall of strangers' videos.
+   */
+  source: "recommended" | "trending" | "none";
 };
 
 /**
@@ -182,14 +188,18 @@ function byFrequency(values: string[]): string[] {
  *
  * Videos already in the library are excluded — recommending someone a note they have already made
  * is the fastest way to look broken.
+ *
+ * An empty library returns an empty feed, not the trending chart: with nothing read there is
+ * nothing to recommend, and the search box is the honest thing to show.
  */
 export async function fetchRecommendations(
   libraryVideoIds: string[],
   regionCode = "US",
 ): Promise<FeedPage> {
-  // Nothing read yet — there is no signal to personalise on, so the plain chart is the honest
-  // answer rather than an empty screen pretending to be tailored.
-  if (!libraryVideoIds.length) return unpaged(fetchTrending(regionCode));
+  // Nothing read yet. Return no feed at all rather than the trending chart: a first-time user is
+  // better served by the search box than by a wall of videos picked for nobody, and this also
+  // costs zero quota on the one request every brand-new account is guaranteed to make.
+  if (!libraryVideoIds.length) return { results: [], nextPageToken: null, source: "none" };
 
   // One call gives channel AND category for every library video (1 unit, up to 50 ids).
   const seedUrl = new URL(`${API}/videos`);
