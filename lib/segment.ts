@@ -30,17 +30,29 @@ export interface Subheading {
 const clock = (seconds: number) => formatDuration(Math.max(0, Math.floor(seconds))) ?? "0:00";
 
 /**
- * Indices that open a speaker turn — the only positions a section may begin at.
+ * The positions a section may begin at.
  *
- * A turn runs from one of these to the next, so cutting exclusively here means a turn is either
- * wholly inside a section or wholly inside the following one. It cannot straddle the two.
+ * For a conversation these are the speaker-turn starts. A turn runs from one of these to the next,
+ * so cutting exclusively here means a turn is either wholly inside a section or wholly inside the
+ * following one — it cannot straddle the two.
+ *
+ * A MONOLOGUE has no turns, and taking the same rule literally there is a bug: a lecture has exactly
+ * one speaker, so this returned `[0]` alone, every subheading snapped to it, and an hour of speech
+ * collapsed into a single undivided section no matter how many boundaries the model found.
+ *
+ * The right unit is not "speaker turn" but "the natural break this text actually has". TextTiling
+ * (Hearst 1997) assigns a boundary to the nearest PARAGRAPH break; the speaker turn is the dialogue
+ * equivalent we substitute when there are turns to use. With one voice, the original unit applies —
+ * and our paragraph is the ASR segment, since each one is a distinct utterance with its own start
+ * time. So a monologue may cut at any segment, which is TextTiling as published.
  */
-function turnStarts(segments: AsrSegment[]): number[] {
-  const out: number[] = [];
+function cutPoints(segments: AsrSegment[]): number[] {
+  const turns: number[] = [];
   for (let i = 0; i < segments.length; i++) {
-    if (i === 0 || segments[i].speaker !== segments[i - 1].speaker) out.push(i);
+    if (i === 0 || segments[i].speaker !== segments[i - 1].speaker) turns.push(i);
   }
-  return out;
+  if (turns.length > 1) return turns;
+  return segments.map((_, i) => i); // single voice → every paragraph is a legal break
 }
 
 /**
@@ -54,7 +66,7 @@ export function buildSubheadedSections(
 ): BuiltSection[] | null {
   if (!segments.length || !subheadings.length) return null;
 
-  const turns = turnStarts(segments);
+  const turns = cutPoints(segments);
   if (!turns.length) return null;
 
   // Snap each subheading to the nearest turn start. Nearest, unconditionally — a proposed time

@@ -48,6 +48,24 @@ const MODEL = process.env.GROQ_MODEL || "qwen/qwen3.6-27b";
 const USE_JSON_MODE = process.env.GROQ_JSON_MODE === "on";
 
 /**
+ * Thinking is switched OFF, and this is what actually makes the annotation reliable.
+ *
+ * Left on, the model spent its entire completion budget reasoning aloud and never reached the
+ * answer: observed `finish_reason: "length"` at 2,048 completion tokens with the <think> block still
+ * unterminated, so there was no JSON to parse at all. It succeeded only when a thought happened to
+ * finish early — a coin toss, which is why some notes had subheadings and others did not.
+ *
+ * With reasoning_effort "none" the same request answers in 193 completion tokens instead of 2,048:
+ * 4,123 + 193 = 4,316 against the 8,000 TPM ceiling, `finish_reason: "stop"`, clean JSON, and titles
+ * that read as complete phrases instead of trailing off mid-clause. This task is extraction, not
+ * deduction — there is nothing in it worth two thousand tokens of deliberation.
+ *
+ * Groq accepts only "none" or "default" here, and only on reasoning models; a model set through
+ * GROQ_MODEL that lacks the field 400s, which the retry below absorbs.
+ */
+const REASONING = process.env.GROQ_REASONING || "none";
+
+/**
  * Digest budget. `digest()` used to emit one line per 30 s with NO ceiling, so its size scaled with
  * the recording without limit — measured at ~6,685 tokens for 150 minutes, breaching the allowance
  * before the reply is even counted. The sampling interval is now derived from the recording's
@@ -236,17 +254,19 @@ export async function requestAnnotation(
     .filter(Boolean)
     .join("\n");
 
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const ask = (jsonMode: boolean) =>
+    const ask = (opts: { jsonMode: boolean; reasoning: boolean }) =>
       fetch(ENDPOINT, {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: MODEL,
           temperature: 0.2,
-          ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+          ...(opts.jsonMode ? { response_format: { type: "json_object" } } : {}),
+          ...(opts.reasoning ? { reasoning_effort: REASONING } : {}),
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: header + digest(segments) },
@@ -255,15 +275,29 @@ export async function requestAnnotation(
         signal: controller.signal,
       });
 
-    let res = await ask(USE_JSON_MODE);
-    if (USE_JSON_MODE && res.status === 400) {
-      // Not every model on Groq accepts response_format — preview models in particular reject it
-      // with a 400 that is indistinguishable from a bad request. The prompt already demands JSON
-      // and the parser tolerates prose around it, so drop the flag and ask again rather than lose
-      // the whole annotation over an unsupported option.
+    let res = await ask({ jsonMode: USE_JSON_MODE, reasoning: true });
+    if (res.status === 400) {
+      // Both options are model-specific: reasoning_effort exists only on reasoning models, and JSON
+      // mode is what those same models refuse. A model chosen through GROQ_MODEL may accept neither,
+      // so a 400 buys one plain retry rather than losing the annotation over an unsupported field.
+      // It spends a second helping of the per-minute allowance, so it stays a last resort.
       const why = (await res.text().catch(() => "")).slice(0, 200);
-      console.warn(`[verbatim] ${MODEL} rejected JSON mode (${why}) — retrying without it`);
-      res = await ask(false);
+      console.warn(`[verbatim] ${MODEL} refused the request options (${why}) — retrying plain`);
+      res = await ask({ jsonMode: false, reasoning: false });
+    }
+    if (res.status === 429) {
+      // A rate limit is a "not yet", not a "no" — and Groq says exactly how long to wait in the
+      // retry-after header (observed: "Please try again in 6s"). Throwing the annotation away over
+      // a few seconds costs the note its subheadings for good, so wait it out when the delay fits
+      // inside the budget we already committed to. Only once: if it is still limited after that,
+      // the ceiling is genuinely in the way and the fallback is the right answer.
+      const wait = Math.ceil(Number(res.headers.get("retry-after") ?? "0") * 1000);
+      const spent = Date.now() - startedAt;
+      if (wait > 0 && spent + wait + 3000 < TIMEOUT_MS) {
+        console.warn(`[verbatim] rate limited — waiting ${wait}ms and retrying once`);
+        await new Promise((r) => setTimeout(r, wait));
+        res = await ask({ jsonMode: USE_JSON_MODE, reasoning: true });
+      }
     }
     if (!res.ok) {
       // The body names the cause — an unknown model id, an invalid key, a rate limit. Without it a
