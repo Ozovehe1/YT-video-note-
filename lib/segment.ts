@@ -30,82 +30,49 @@ export interface Subheading {
 const clock = (seconds: number) => formatDuration(Math.max(0, Math.floor(seconds))) ?? "0:00";
 
 /**
- * The positions a section may begin at.
- *
- * For a conversation these are the speaker-turn starts. A turn runs from one of these to the next,
- * so cutting exclusively here means a turn is either wholly inside a section or wholly inside the
- * following one — it cannot straddle the two.
- *
- * A MONOLOGUE has no turns, and taking the same rule literally there is a bug: a lecture has exactly
- * one speaker, so this returned `[0]` alone, every subheading snapped to it, and an hour of speech
- * collapsed into a single undivided section no matter how many boundaries the model found.
- *
- * The right unit is not "speaker turn" but "the natural break this text actually has". TextTiling
- * (Hearst 1997) assigns a boundary to the nearest PARAGRAPH break; the speaker turn is the dialogue
- * equivalent we substitute when there are turns to use. With one voice, the original unit applies —
- * and our paragraph is the ASR segment, since each one is a distinct utterance with its own start
- * time. So a monologue may cut at any segment, which is TextTiling as published.
- */
-function turnStarts(segments: AsrSegment[]): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < segments.length; i++) {
-    if (i === 0 || segments[i].speaker !== segments[i - 1].speaker) out.push(i);
-  }
-  return out;
-}
-
-/**
  * Where this subheading's cut actually lands.
  *
- * Preference is always the nearest speaker-turn start, because that is what keeps an exchange
- * between two people whole. But a turn is not always available: a lecture has one turn for its
- * entire hour, and a lecture with a short Q&A has two. Insisting on turn starts there meant several
- * subheadings snapped onto the same one and collapsed — measured at 6 subheadings producing 2
- * sections, one of them 65 minutes long, under a title belonging to a different part of the talk.
+ * TextTiling's rule is to assign a detected boundary to the nearest natural break — in its own
+ * words, "the closest paragraph break", so the segmentation "does not disturb paragraphs". Applied
+ * literally that means: find the unit the proposed time falls in, and cut at that unit's START.
  *
- * So when the preferred turn is already spoken for, the cut falls back to the nearest PARAGRAPH
- * start after it — the unit TextTiling uses in the first place, the speaker turn being the dialogue
- * substitute we prefer when there are turns to prefer. This costs nothing in speaker integrity:
- * splitting one person's long uninterrupted stretch leaves the same voice either side of the
- * heading, which is exactly what a monologue does. Only a cut that lands mid-exchange would break
- * the promise, and one never can — a turn start is always preferred where one is free.
+ * Our unit is the speaker TURN when there is one to use, because cutting at a turn start is what
+ * keeps an exchange between two people whole. So the time picks the nearest paragraph, and we then
+ * walk back to the beginning of the turn that paragraph belongs to.
+ *
+ * When that turn start is already taken — the previous subheading owns it — the paragraph itself is
+ * the fallback. That is the same unit TextTiling names, and it costs nothing in speaker integrity:
+ * the same voice sits either side of the heading, exactly as in a monologue. It is what lets a
+ * lecture (one turn for the whole hour) and a lecture with a short Q&A (two turns) be subdivided at
+ * all; insisting on turn starts there collapsed 6 subheadings into 2 sections.
+ *
+ * And when the paragraph is taken too, the subheading is dropped rather than shunted forward. Two
+ * boundaries landing in the same paragraph are one boundary, not two — shunting produced a
+ * two-second section instead.
+ *
+ * Earlier attempts preferred the nearest turn at ANY distance, which reached 27 minutes across a
+ * lecture with two turns and put a subheading asked for at 38:20 at 1:05:00. Snapping within the
+ * containing unit cannot do that: the paragraph is by construction the closest break there is.
  */
 function resolveCut(
   segments: AsrSegment[],
-  turnSet: Set<number>,
+  turnStartOf: number[],
   wantedSeconds: number,
   after: number,
-  limitSeconds: number,
 ): number | null {
-  let bestTurn: number | null = null;
-  let bestTurnGap = Infinity;
-  let bestAny: number | null = null;
-  let bestAnyGap = Infinity;
-
-  for (let i = after + 1; i < segments.length; i++) {
-    // A cut may not wander into the NEXT subheading's half of the gap. Without a bound the "prefer
-    // a turn" rule reached for a turn start 27 minutes away in a lecture that had only two turns,
-    // placing a subheading asked for at 38:20 at 1:05:00 and squeezing the rest into 12-second
-    // slivers. Bounding at the next subheading's time alone was not enough — a turn sitting exactly
-    // there was still eligible, and still 800 seconds adrift. The MIDPOINT between the two requested
-    // times is the honest limit: past it, the other subheading is the closer owner of that moment.
-    // It comes from the model's own answer, so no threshold is invented here.
-    if (segments[i].start > limitSeconds && bestAny !== null) break;
+  let nearest = 0;
+  let bestGap = Infinity;
+  for (let i = 0; i < segments.length; i++) {
     const gap = Math.abs(segments[i].start - wantedSeconds);
-    if (gap < bestAnyGap) {
-      bestAny = i;
-      bestAnyGap = gap;
-    }
-    if (turnSet.has(i) && gap < bestTurnGap) {
-      bestTurn = i;
-      bestTurnGap = gap;
+    if (gap < bestGap) {
+      nearest = i;
+      bestGap = gap;
     }
   }
-
-  // A turn start wins when one is available in this stretch — that is what keeps an exchange whole.
-  // Otherwise the nearest paragraph, which is TextTiling's own unit and leaves the same voice either
-  // side of the heading.
-  return bestTurn ?? bestAny;
+  const turn = turnStartOf[nearest];
+  if (turn > after) return turn;
+  if (nearest > after) return nearest;
+  return null;
 }
 
 /**
@@ -119,8 +86,12 @@ export function buildSubheadedSections(
 ): BuiltSection[] | null {
   if (!segments.length || !subheadings.length) return null;
 
-  const turnSet = new Set(turnStarts(segments));
-  if (!turnSet.size) return null;
+  // For each paragraph, the index that opens its speaker turn.
+  const turnStartOf: number[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    turnStartOf[i] =
+      i === 0 || segments[i].speaker !== segments[i - 1].speaker ? i : turnStartOf[i - 1];
+  }
 
   // Place each subheading in the order the model proposed them, nearest to the time it asked for —
   // preferring a speaker-turn start, falling back to a paragraph start when that turn is taken.
@@ -137,12 +108,10 @@ export function buildSubheadedSections(
       continue;
     }
     const after = kept[kept.length - 1].index;
-    const next = ordered[k + 1]?.startSeconds;
-    const limit = next === undefined ? Infinity : (subheading.startSeconds + next) / 2;
-    const index = resolveCut(segments, turnSet, subheading.startSeconds, after, limit);
-    // Only when the note has genuinely run out of paragraphs to give — the model asked for more
-    // sections than there is transcript. Nothing is dropped for being short.
-    if (index === null) break;
+    const index = resolveCut(segments, turnStartOf, subheading.startSeconds, after);
+    // Either the note has run out of paragraphs, or this subheading's nearest break belongs to the
+    // previous one. Skip it; nothing is ever dropped merely for being short.
+    if (index === null) continue;
     kept.push({ index, title: subheading.title });
   }
 
