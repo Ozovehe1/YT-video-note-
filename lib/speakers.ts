@@ -150,6 +150,125 @@ function cleanRole(raw: string | undefined): string | null {
   return null; // an invented role ("Philosopher") is a guess about a person, same as a name
 }
 
+/**
+ * Cues where a speaker names SOMEONE ELSE. Matching one proves the speaker is not that person.
+ *
+ * This is the signal that catches a swap. "I'm back with Reiner Pope, who is the CEO of Maddox" is
+ * the host introducing the guest, so whoever says it is definitionally NOT Reiner Pope — and that
+ * is checkable without trusting the model at all.
+ */
+const INTRODUCES_OTHER = [
+  /\b(?:here|back|along|together)\s+with\b/,
+  /\bjoined\s+by\b/,
+  /\bjoining\s+(?:me|us)\b/,
+  /\bwith\s+(?:me|us)\s+(?:is|are|today)\b/,
+  /\bmy\s+guest\b/,
+  /\bour\s+guest\b/,
+  /\bwelcome\s+(?:back\s+)?(?:to\s+the\s+show\s+)?\b/,
+  /\b(?:speaking|talking|chatting|sitting\s+down)\s+(?:to|with)\b/,
+  /\bintroduc(?:e|ing)\b/,
+  /\bguest\s+(?:today\s+)?is\b/,
+];
+
+/**
+ * Cues where a speaker names THEMSELVES.
+ *
+ * "I'm" alone is far too loose — "I'm back with Reiner Pope" would read as a self-introduction and
+ * assert exactly the wrong thing — so a match is discarded when an INTRODUCES_OTHER cue appears in
+ * the same breath, and the words immediately after the cue must look like a name rather than a
+ * continuation of the sentence.
+ */
+const INTRODUCES_SELF = [
+  /\bmy\s+name\s+is\b/,
+  /\bi'?m\s+your\s+host\b/,
+  /\bthis\s+is\b/,
+  /\bi\s+am\b/,
+  /\bi'?m\b/,
+];
+
+/** Words that, right after a self-cue, mean the sentence is continuing rather than naming anyone. */
+const NOT_A_NAME_AFTER_CUE = new Set([
+  "back", "here", "going", "gonna", "just", "really", "not", "so", "very", "also",
+  "still", "always", "never", "sure", "glad", "happy", "excited", "delighted",
+  "joined", "with", "talking", "speaking", "curious", "interested", "sorry",
+  "afraid", "trying", "about", "now", "the", "a", "an", "in", "at", "on",
+]);
+
+/** How far after a cue to look for a name — long enough for "welcome to the show, Reiner Pope". */
+const CUE_WINDOW_WORDS = 6;
+
+/**
+ * Which candidate names does this line name, and is it naming the speaker or someone else?
+ *
+ * Returns the names the line attributes to OTHERS and the names it attributes to the SPEAKER, using
+ * the surname-or-forename word match `sameName` already provides. That fuzziness is essential here:
+ * the ASR heard "Reiner Pope" as "Ryan or Pope", so the forename is unrecoverable and only the
+ * surname ties the mention to the candidate.
+ */
+function nameCuesIn(text: string, candidates: string[][]): { others: string[][]; selves: string[][] } {
+  const normalized = normalizeText(text);
+  const others: string[][] = [];
+  const selves: string[][] = [];
+  if (!normalized) return { others, selves };
+
+  const namesNear = (from: number): string[][] => {
+    const after = normalized.slice(from).split(" ").filter(Boolean).slice(0, CUE_WINDOW_WORDS);
+    return candidates.filter((name) => name.some((word) => after.some((w) => sameName(word, w))));
+  };
+
+  // Third person first: an "introduces other" cue anywhere in the line disqualifies every
+  // self-reading of it, which is what stops "I'm back with X" asserting that the speaker is X.
+  let sawOther = false;
+  for (const cue of INTRODUCES_OTHER) {
+    const m = cue.exec(normalized);
+    if (!m) continue;
+    sawOther = true;
+    for (const name of namesNear(m.index + m[0].length)) others.push(name);
+  }
+  if (sawOther) return { others, selves };
+
+  for (const cue of INTRODUCES_SELF) {
+    const m = cue.exec(normalized);
+    if (!m) continue;
+    const rest = normalized.slice(m.index + m[0].length).trim().split(" ").filter(Boolean);
+    if (!rest.length || NOT_A_NAME_AFTER_CUE.has(rest[0])) continue;
+    for (const name of namesNear(m.index + m[0].length)) selves.push(name);
+    break;
+  }
+  return { others, selves };
+}
+
+/**
+ * Bind names to actual voices, from the transcript rather than from the model's say-so.
+ *
+ * The name check this file already had verifies that a name EXISTS in the title, channel or
+ * transcript. That makes a hallucinated name impossible but says nothing about which voice it
+ * belongs to, so two real names swapped between two real speakers passed every guard — the exact
+ * failure this exists to catch.
+ *
+ * Produces, per speaker label: names that speaker cannot be, and names they said they are.
+ */
+function speakerNameConstraints(
+  segments: AsrSegment[],
+  candidates: string[][],
+): { cannotBe: Map<string, string[][]>; mustBe: Map<string, string[][]> } {
+  const cannotBe = new Map<string, string[][]>();
+  const mustBe = new Map<string, string[][]>();
+  if (!candidates.length) return { cannotBe, mustBe };
+
+  for (const seg of segments) {
+    const { others, selves } = nameCuesIn(seg.text, candidates);
+    if (others.length) cannotBe.set(seg.speaker, [...(cannotBe.get(seg.speaker) ?? []), ...others]);
+    if (selves.length) mustBe.set(seg.speaker, [...(mustBe.get(seg.speaker) ?? []), ...selves]);
+  }
+  return { cannotBe, mustBe };
+}
+
+/** Do two normalized name-word lists refer to the same person? Any shared distinctive word does. */
+function sameCandidate(a: string[], b: string[]): boolean {
+  return a.some((x) => b.some((y) => sameName(x, y)));
+}
+
 export interface AnonymizedSpeakers {
   /** The segments, relabelled "Speaker 1", "Speaker 2", … in first-appearance order. */
   segments: AsrSegment[];
@@ -242,11 +361,64 @@ export function resolveSpeakers(
     return n === 1 ? label : `${label} ${n}`;
   };
 
+  // The model's proposed name per surviving label, before any of it is believed.
+  const proposed = new Map<string, string>();
+  for (const label of survivors) {
+    const name = cleanName(hintFor.get(label)?.name, haystack);
+    if (name) proposed.set(label, name);
+  }
+
+  // D3b — check each proposed name against who the TRANSCRIPT says that voice is.
+  //
+  // Everything above only asks "is this a real name from this video?", which a swap satisfies
+  // perfectly: both names are real and both are in the title. Introduction cues are what tie a name
+  // to a voice, so they are the only thing that can catch two real people wearing each other's
+  // names — the failure that reads as authoritative and is invisible to anyone who wasn't there.
+  const candidates = [...proposed.values()].map((n) => normalizeText(n).split(" ").filter(Boolean));
+  const { cannotBe, mustBe } = speakerNameConstraints(segments, candidates);
+
+  const violates = (label: string, name: string): boolean => {
+    const words = normalizeText(name).split(" ").filter(Boolean);
+    if ((cannotBe.get(label) ?? []).some((c) => sameCandidate(c, words))) return true;
+    const claims = mustBe.get(label) ?? [];
+    // A voice that named itself must not be handed a different name.
+    return claims.length > 0 && !claims.some((c) => sameCandidate(c, words));
+  };
+
+  const conflicts = survivors.filter((l) => {
+    const n = proposed.get(l);
+    return n ? violates(l, n) : false;
+  });
+
+  if (conflicts.length) {
+    const named = survivors.filter((l) => proposed.has(l));
+    // Two speakers wearing each other's names is the common case and is repairable: swapping is
+    // the only other assignment of the same two verified names, so try it and keep it only if it
+    // satisfies every constraint the transcript gave us.
+    if (named.length === 2) {
+      const [a, b] = named;
+      const swapped = new Map(proposed);
+      swapped.set(a, proposed.get(b)!);
+      swapped.set(b, proposed.get(a)!);
+      if (!violates(a, swapped.get(a)!) && !violates(b, swapped.get(b)!)) {
+        console.warn("[verbatim] speaker names were swapped — corrected from introduction cues");
+        proposed.set(a, swapped.get(a)!);
+        proposed.set(b, swapped.get(b)!);
+      } else {
+        for (const l of conflicts) proposed.delete(l);
+      }
+    } else {
+      // More than two, or a swap that still contradicts the transcript: drop only the names that
+      // conflict. Falling back to "Host"/"Speaker 2" is a small loss; leaving a confident wrong
+      // name on a verbatim quote is the thing worth avoiding.
+      for (const l of conflicts) proposed.delete(l);
+    }
+  }
+
   const finalOf = new Map<string, string>();
   survivors.forEach((label, i) => {
-    const hint = hintFor.get(label);
-    const name = cleanName(hint?.name, haystack);
-    const role = name ? null : cleanRole(hint?.role);
+    const name = proposed.get(label) ?? null;
+    const role = name ? null : cleanRole(hintFor.get(label)?.role);
     finalOf.set(label, uniquify(name ?? role ?? `Speaker ${i + 1}`));
   });
 
